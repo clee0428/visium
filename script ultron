@@ -1,0 +1,151 @@
+# ensure conda hook is available
+source ~/miniconda3/etc/profile.d/conda.sh 2>/dev/null || true
+
+# add conda to your shell startup (one-off)
+conda init bash
+source ~/.bashrc
+
+conda create -n visium_r -y -c conda-forge -c bioconda \
+  r-base=4.3 \
+  r-seurat \
+  r-hdf5r \
+  r-arrow \
+  r-matrix \
+  r-ggplot2 \
+  r-devtools \
+  r-readr r-fields r-rfast r-spam r-progress r-vroom \
+  r-spacexr
+
+1. EACH NEW SESSION (bash)
+# 1) activate env
+conda activate visium_r
+
+# 2) start R
+R
+
+
+library(Seurat)
+library(spacexr)
+library(Matrix)
+library(ggplot2)
+
+
+localdir <- "/home/lchristine/visium/visium_tar/GIMR_GGP_MARPAJ_20250625_Visium/PB245/spaceranger_count_cytassist/PB245/outs"
+
+dir.exists(localdir)
+list.files(localdir)
+pb245 <- Load10X_Spatial(
+  data.dir = localdir,
+  bin.size = c(2, 8, 16)   # 002, 008, 016 µm bins
+)
+
+pb245
+Assays(pb245)
+
+DefaultAssay(pb245) <- "Spatial.016um"
+
+vis_counts <- GetAssayData(pb245, assay = "Spatial.016um", layer = "counts")
+vis_umi    <- Matrix::colSums(vis_counts)
+
+coords <- GetTissueCoordinates(pb245, assay = "Spatial.016um")
+colnames(coords) <- c("x", "y")
+
+
+query <- SpatialRNA(
+  coords      = coords,
+  counts      = vis_counts,
+  nUMI        = vis_umi,
+  require_int = FALSE   # skip extra checks; counts already integers
+)
+
+sc_ref <- readRDS("~/singlecell_refs/GSE228377/GSE228377_PMP.rds")
+
+DefaultAssay(sc_ref) <- "RNA"
+
+sc_ref <- NormalizeData(sc_ref)
+sc_ref <- FindVariableFeatures(sc_ref)
+sc_ref <- ScaleData(sc_ref)
+sc_ref <- RunPCA(sc_ref)
+sc_ref <- FindNeighbors(sc_ref, dims = 1:20)
+sc_ref <- FindClusters(sc_ref, resolution = 0.6)
+
+# for now, use clusters as cell types
+sc_ref$celltype <- Idents(sc_ref)
+table(sc_ref$celltype)[1:10]
+
+ref_counts <- GetAssayData(sc_ref, slot = "counts")
+ref_types  <- sc_ref$celltype
+ref_umi    <- Matrix::colSums(ref_counts)
+
+reference <- Reference(
+  counts       = ref_counts,
+  cell_types   = ref_types,
+  total_counts = ref_umi
+)
+
+RUN RCTD
+rctd <- create.RCTD(
+  spatialRNA = query,
+  reference  = reference,
+  max_cores  = 8        # adjust if Ultron gives you more/less CPUs
+)
+
+rctd <- run.RCTD(
+  rctd,
+  doublet_mode = "multi"
+)
+
+
+weights <- rctd@results$weights      # spots × cell types matrix
+weights_df <- as.data.frame(weights)
+
+# sanity check
+dim(weights_df)
+head(colnames(weights_df))
+
+pb245 <- AddMetaData(pb245, metadata = weights_df)
+
+# pick the first few cell types
+head(colnames(weights_df))
+
+SpatialPlot(pb245, features = colnames(weights_df)[1], alpha = 0.9) +
+  ggtitle(colnames(weights_df)[1])
+
+SpatialPlot(pb245, features = colnames(weights_df)[2], alpha = 0.9) +
+  ggtitle(colnames(weights_df)[2])
+
+# example: remap cluster labels in sc_ref (so RCTD celltype names are meaningful)
+celltype_map <- c(
+  "0" = "Tumour_epithelial",
+  "1" = "CAF",
+  "2" = "T_cells",
+  "3" = "Myeloid"
+  # etc...
+)
+
+sc_ref$celltype_annot <- plyr::revalue(sc_ref$celltype, celltype_map)
+
+# re-build reference and re-run RCTD if you want nicer names,
+# OR just rename columns in weights_df if mapping is 1:1.
+
+
+DefaultAssay(pb245) <- "Spatial.008um"
+vis_counts <- GetAssayData(pb245, assay = "Spatial.008um", layer = "counts")
+vis_umi    <- Matrix::colSums(vis_counts)
+coords     <- GetTissueCoordinates(pb245, assay = "Spatial.008um")
+colnames(coords) <- c("x","y")
+
+# Optional: subset to 20k bins to keep runtime moderate
+set.seed(1)
+subset_cells <- sample(colnames(vis_counts), 20000)
+vis_counts_sub <- vis_counts[, subset_cells]
+vis_umi_sub    <- vis_umi[subset_cells]
+coords_sub     <- coords[subset_cells, ]
+
+query_sub <- SpatialRNA(
+  coords      = coords_sub,
+  counts      = vis_counts_sub,
+  nUMI        = vis_umi_sub,
+  require_int = FALSE
+)
+
