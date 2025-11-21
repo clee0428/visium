@@ -149,3 +149,22 @@ query_sub <- SpatialRNA(
   require_int = FALSE
 )
 
+
+
+making directory and downloading
+
+mkdir -p /home/lchristine/singlecell_refs/GSE228377
+
+
+cd /home/lchristine/singlecell_refs/GSE228377
+wget --content-disposition https://ftp.ncbi.nlm.nih.gov/geo/series/GSE228nnn/GSE228377/suppl/GSE228377_PMP.rds.gz
+confirm its there
+
+ls -lh
+
+
+verify file
+file GSE228377_PMP.rds.gz
+gunzip -t GSE228377_PMP.rds.gz
+
+
