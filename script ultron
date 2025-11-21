@@ -355,5 +355,27 @@ save.image(file.path(proj_dir, "PB245_RCTD_workspace.RData"))
 cd /home/lchristine
 tar czf PB245_RCTD_backup_$(date +%Y%m%d).tar.gz visium_PB245
 
+error showing results null
+
+library(spacexr)
+
+# (re-load these from RDS if needed)
+# query     <- readRDS("/home/lchristine/visium_PB245/query_PB245_008um.rds")
+# reference <- readRDS("/home/lchristine/visium_PB245/reference_PMP.rds")
+
+rctd <- create.RCTD(
+  spatialRNA   = query,
+  reference    = reference,
+  max_cores    = 8,
+  UMI_min_sigma = 20   # important for Visium HD
+)
+
+rctd <- run.RCTD(
+  rctd,
+  doublet_mode = "multi"
+)
+
+
+
 
 
