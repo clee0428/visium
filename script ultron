@@ -375,6 +375,51 @@ rctd <- run.RCTD(
   doublet_mode = "multi"
 )
 
+If no error:
+str(rctd@results, max.level = 1)
+
+Only then extract
+results <- rctd@results
+cell_type_weights <- results$weights
+
+class(cell_type_weights)
+dim(cell_type_weights)
+
+
+[1] "matrix"
+[1] <n_spots> <n_celltypes>
+
+
+save
+saveRDS(rctd, "/home/lchristine/visium_PB245/rctd_final.rds")
+write.csv(
+  as.data.frame(cell_type_weights),
+  "/home/lchristine/visium_PB245/RCTD_celltype_proportions.csv"
+)
+
+
+rctd
+str(rctd@results, max.level = 1)
+class(results$weights)
+
+
+Just save image
+save.image("/home/lchristine/visium_PB245/R_session_full.RData")
+
+saveRDS(pb245,      "/home/lchristine/visium_PB245/pb245_visiumHD.rds")
+saveRDS(coords_df,  "/home/lchristine/visium_PB245/coords_df.rds")
+saveRDS(vis_counts, "/home/lchristine/visium_PB245/vis_counts.rds")
+saveRDS(vis_umi,    "/home/lchristine/visium_PB245/vis_umi.rds")
+saveRDS(reference,  "/home/lchristine/visium_PB245/reference_PMP.rds")
+saveRDS(query,      "/home/lchristine/visium_PB245/query_spatialRNA.rds")
+saveRDS(rctd,       "/home/lchristine/visium_PB245/rctd_object_incomplete.rds")
+
+
+save log of commands
+history > /home/lchristine/visium_PB245/session_commands.log
+
+
+history > /home/lchristine/visium_PB245/session_commands.log
 
 
 
