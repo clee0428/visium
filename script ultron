@@ -165,8 +165,195 @@ ls -lh
 
 verify file
 file GSE228377_PMP.rds.gz
-gunzip -t GSE228377_PMP.rds.gz
+gunzip GSE228377_PMP.rds.gz
 
+
+conda activate visium_r
+R
+
+library(Seurat)
+library(Matrix)
+library(spacexr)
+
+pmp_path <- "/home/lchristine/singlecell_refs/GSE228377/GSE228377_PMP.rds"
+
+file.exists(pmp_path)   # should be TRUE
+
+sc_ref <- readRDS(pmp_path)
+sc_ref
+class(sc_ref)
+
+saveRDS(sc_ref, "/home/lchristine/singlecell_refs/GSE228377/sc_ref_PMP.rds")
+
+sc_ref <- readRDS("/home/lchristine/singlecell_refs/GSE228377/sc_ref_PMP.rds")
+pb245      <- readRDS("/home/lchristine/visium_PB245/pb245_visiumHD.rds")
+vis_counts <- readRDS("/home/lchristine/visium_PB245/vis_counts.rds")
+vis_umi    <- readRDS("/home/lchristine/visium_PB245/vis_umi.rds")
+coords_df  <- readRDS("/home/lchristine/visium_PB245/coords_df.rds")
+DefaultAssay(sc_ref) <- "RNA"
+
+sc_ref <- NormalizeData(sc_ref)
+sc_ref <- FindVariableFeatures(sc_ref)
+sc_ref <- ScaleData(sc_ref)
+sc_ref <- RunPCA(sc_ref)
+sc_ref <- FindNeighbors(sc_ref, dims = 1:20)
+sc_ref <- FindClusters(sc_ref, resolution = 0.6)
+
+sc_ref$celltype <- Idents(sc_ref)
+ref_counts <- GetAssayData(sc_ref, slot = "counts")
+ref_types  <- sc_ref$celltype
+ref_umi    <- Matrix::colSums(ref_counts)
+
+
+ref_counts <- GetAssayData(sc_ref, slot = "counts")
+ref_types  <- sc_ref$celltype
+ref_umi    <- Matrix::colSums(ref_counts)   # fine to keep, but not needed here
+
+
+reference <- Reference(
+  counts    = ref_counts,
+  cell_types = ref_types
+)
+saveRDS(reference, "/home/lchristine/visium_PB245/reference_PMP.rds")
+
+continue with rctd as planned
+
+
+library(spacexr)
+library(Matrix)
+library(Seurat)
+
+# 1. Make sure Visium objects and reference are loaded
+pb245      <- readRDS("/home/lchristine/visium_PB245/pb245_visiumHD.rds")
+vis_counts <- readRDS("/home/lchristine/visium_PB245/vis_counts.rds")
+vis_umi    <- readRDS("/home/lchristine/visium_PB245/vis_umi.rds")
+coords_df  <- readRDS("/home/lchristine/visium_PB245/coords_df.rds")
+reference  <- readRDS("/home/lchristine/visium_PB245/reference_PMP.rds")
+
+# 2. Rebuild the SpatialRNA query **without** commenting it out
+query <- SpatialRNA(
+  coords      = coords_df,
+  counts      = vis_counts,
+  nUMI        = vis_umi,
+  require_int = FALSE
+)
+
+# (optional but recommended)
+saveRDS(query, "/home/lchristine/visium_PB245/query_PB245_008um.rds")
+
+# 3. Create RCTD object
+rctd <- create.RCTD(
+  spatialRNA = query,
+  reference  = reference,
+  max_cores  = 8
+)
+
+# 4. Run RCTD
+rctd <- run.RCTD(
+  rctd,
+  doublet_mode = "multi"
+)
+
+saveRDS(rctd, "/home/lchristine/visium_PB245/rctd_PB245_008um.rds")
+
+after rctd add weights back to pb245
+rctd    <- readRDS("/home/lchristine/visium_PB245/rctd_PB245_008um.rds")
+pb245   <- readRDS("/home/lchristine/visium_PB245/pb245_visiumHD.rds")
+
+DefaultAssay(pb245) <- "Spatial.008um"
+
+weights    <- rctd@results$weights    # spots × celltypes
+weights_df <- as.data.frame(weights)
+
+# Make sure order matches
+weights_df <- weights_df[colnames(pb245), , drop = FALSE]
+
+pb245 <- AddMetaData(pb245, metadata = weights_df)
+
+saveRDS(pb245, "/home/lchristine/visium_PB245/pb245_visiumHD_RCTD_008um.rds")
+
+celltypes <- colnames(weights_df)
+celltypes[1:10]
+
+SpatialFeaturePlot(pb245, features = celltypes[1])
+SpatialFeaturePlot(pb245, features = celltypes[2])
+
+lower the UMI as UMI error popped up
+
+rctd <- create.RCTD(
+  spatialRNA = query,
+  reference = reference,
+  max_cores = 8,
+  UMI_min_sigma = 20   # <- CRITICAL FIX (lower from 300)
+)
+
+rctd <- run.RCTD(rctd, doublet_mode = "multi")
+
+
+full continaution
+
+# View results
+results <- rctd@results
+
+# Extract cell type proportions
+cell_type_weights <- results$weights
+
+# Save results
+saveRDS(results, "/home/lchristine/visium_PB245/RCTD_results.rds")
+write.csv(cell_type_weights,
+          "/home/lchristine/visium_PB245/RCTD_celltype_proportions.csv")
+
+# Optional: add back to Seurat object
+pb245[["RCTD"]] <- CreateAssayObject(data = t(cell_type_weights))
+
+visualise
+library(ggplot2)
+
+plot_df <- as.data.frame(cell_type_weights)
+plot_df$spot <- rownames(plot_df)
+
+library(tidyr)
+plot_long <- pivot_longer(plot_df, -spot,
+                          names_to = "celltype",
+                          values_to = "proportion")
+
+ggplot(plot_long, aes(x = celltype, y = proportion)) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+rctd <- create.RCTD(
+  spatialRNA = query,
+  reference = reference,
+  max_cores = 8,
+  UMI_min_sigma = 20
+)
+
+rctd <- run.RCTD(rctd, doublet_mode = "multi")
+
+saving
+proj_dir    <- "/home/lchristine/visium_PB245"
+ref_dir     <- "/home/lchristine/singlecell_refs/GSE228377"
+
+
+dir.create(proj_dir, showWarnings = FALSE)
+
+## Visium objects
+if (exists("pb245"))      saveRDS(pb245,      file.path(proj_dir, "pb245_visiumHD_RCTD_008um.rds"))
+if (exists("vis_counts")) saveRDS(vis_counts, file.path(proj_dir, "vis_counts.rds"))
+if (exists("vis_umi"))    saveRDS(vis_umi,    file.path(proj_dir, "vis_umi.rds"))
+if (exists("coords_df"))  saveRDS(coords_df,  file.path(proj_dir, "coords_df.rds"))
+
+## scRNA reference
+if (exists("sc_ref"))     saveRDS(sc_ref,     file.path(ref_dir, "sc_ref_PMP_processed.rds"))
+
+## RCTD pieces
+if (exists("reference"))  saveRDS(reference,  file.path(proj_dir, "reference_PMP.rds"))
+if (exists("query"))      saveRDS(query,      file.path(proj_dir, "query_PB245_008um.rds"))
+if (exists("rctd"))       saveRDS(rctd,       file.path(proj_dir, "rctd_PB245_008um.rds"))
+save.image(file.path(proj_dir, "PB245_RCTD_workspace.RData"))
+cd /home/lchristine
+tar czf PB245_RCTD_backup_$(date +%Y%m%d).tar.gz visium_PB245
 
 
 
