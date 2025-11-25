@@ -157,6 +157,97 @@ pheatmap(weighted_expr[top_genes, ], scale = "row", cluster_rows = TRUE, cluster
 # ------------------------------
 
 
+FULL SAVE 
+# ---------------------------------------------------------
+# CREATE SAVE DIRECTORY
+# ---------------------------------------------------------
+save_dir <- "./visium_PB245/analysis_saved"
+dir.create(save_dir, showWarnings = FALSE, recursive = TRUE)
+
+# ---------------------------------------------------------
+# 1) SAVE RAW + PROCESSED VISIUM COUNTS
+# ---------------------------------------------------------
+saveRDS(vis_counts,
+        file.path(save_dir, "vis_counts_original.rds"))
+
+saveRDS(spatial_counts,
+        file.path(save_dir, "vis_counts_sparse_processed.rds"))
+
+# If you created spatial_obj or spatial_obj2, save both
+if (exists("spatial_obj")) {
+  saveRDS(spatial_obj,
+          file.path(save_dir, "spatial_obj.rds"))
+}
+
+if (exists("spatial_obj2")) {
+  saveRDS(spatial_obj2,
+          file.path(save_dir, "spatial_obj2_common_genes.rds"))
+}
+
+# ---------------------------------------------------------
+# 2) SAVE REFERENCE DATA
+# ---------------------------------------------------------
+if (exists("reference_obj")) {
+  saveRDS(reference_obj,
+          file.path(save_dir, "reference_obj.rds"))
+}
+
+# Save raw reference counts if available
+if (exists("ref_counts")) {
+  saveRDS(ref_counts,
+          file.path(save_dir, "reference_counts_matrix.rds"))
+}
+
+# ---------------------------------------------------------
+# 3) SAVE RCTD RESULTS
+# ---------------------------------------------------------
+if (exists("rctd")) {
+  saveRDS(rctd,
+          file.path(save_dir, "rctd_full_object.rds"))
+}
+
+if (exists("weights")) {
+  saveRDS(weights,
+          file.path(save_dir, "rctd_weights_matrix.rds"))
+  write.csv(weights,
+            file.path(save_dir, "rctd_weights_matrix.csv"))
+}
+
+# ---------------------------------------------------------
+# 4) SAVE IMPORTANT DERIVED MATRICES (optional)
+# ---------------------------------------------------------
+if (exists("expr_mat")) {
+  saveRDS(expr_mat,
+          file.path(save_dir, "expression_matrix_common_genes.rds"))
+}
+
+# ---------------------------------------------------------
+# 5) SAVE FIGURES (if they exist)
+# ---------------------------------------------------------
+if (exists("p")) {
+  ggsave(file.path(save_dir, "last_plot_saved.png"), plot = p,
+         width = 8, height = 6)
+}
+
+# ---------------------------------------------------------
+# 6) SAVE UMI HISTOGRAM
+# ---------------------------------------------------------
+png(file.path(save_dir, "umi_histogram.png"), width = 1000, height = 700, res = 130)
+hist(spot_umis, breaks = 50, main = "UMIs per Spot", xlab = "UMI Counts")
+dev.off()
+
+# ---------------------------------------------------------
+# 7) SAVE ENTIRE R SESSION IMAGE
+# ---------------------------------------------------------
+save.image(file = file.path(save_dir, "FULL_R_SESSION_WORKSPACE.RData"))
+
+# ---------------------------------------------------------
+# DONE
+# ---------------------------------------------------------
+cat("\n\n=====================================\n")
+cat(" ALL DATA, R OBJECTS & IMAGES SAVED\n")
+cat(" Location: ", normalizePath(save_dir), "\n")
+cat("=====================================\n\n")
 
 
 
