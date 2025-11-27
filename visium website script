@@ -1,86 +1,174 @@
-# -------------------------------
-# Load libraries
-# -------------------------------
-library(Seurat)
-library(Matrix)
-library(ggplot2)
-library(dplyr)
+#### Full Visium / Seurat v5 analysis script
+#### Update file paths at the top before running.
 
-# -------------------------------
-# 1. Load Visium counts
-# -------------------------------
-vis_counts_path <- "./visium_PB245/vis_counts.rds"
-spatial_counts <- readRDS(vis_counts_path)  # genes x spots, dgCMatrix
-dim(spatial_counts)  # sanity check
+# 0. === User adjustable paths ===
+project_root <- "./visium_PB245"               # change if needed
+vis_counts_path <- file.path(project_root, "vis_counts.rds")
+reference_obj_path <- file.path(project_root, "reference_obj.rds")  # optional
+out_dir <- file.path(project_root, "analysis_results")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-# -------------------------------
-# 2. Create Seurat object
-# -------------------------------
-seu_spatial <- CreateSeuratObject(
-  counts = spatial_counts,
-  assay = "Spatial",
-  project = "Visium_Sample"
-)
+# 1. Load libraries
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(Matrix)
+  library(ggplot2)
+  library(dplyr)
+  library(reshape2)
+})
 
-# -------------------------------
-# 3. Remove spots with 0 UMIs
-# -------------------------------
-umi_counts <- colSums(seu_spatial[["Spatial"]]@layers[["counts"]])
-cells_to_keep <- names(umi_counts[umi_counts > 0])
-length(cells_to_keep)  # how many spots remain
+# Optional packages for speed / plotting
+if (!requireNamespace("glmGamPoi", quietly = TRUE)) {
+  message("glmGamPoi not installed: SCTransform will use slower native method. To speed up, install glmGamPoi.")
+}
+if (!requireNamespace("pheatmap", quietly = TRUE)) install.packages("pheatmap")
 
-# Subset Seurat object safely
+# 2. Load Visium counts (expect a dgCMatrix or Read10X output saved as RDS)
+if (!file.exists(vis_counts_path)) stop("vis_counts.rds not found at: ", vis_counts_path)
+spatial_counts <- readRDS(vis_counts_path)    # genes x spots
+
+message("Loaded spatial_counts (class: ", class(spatial_counts)[1], ") dims: ", paste(dim(spatial_counts), collapse = " x "))
+
+# 3. Create Seurat Spatial object (counts -> Spatial assay)
+seu_spatial <- CreateSeuratObject(counts = spatial_counts, assay = "Spatial", project = "Visium")
+message("Seurat object created. Cells: ", ncol(spatial_counts), " Genes: ", nrow(spatial_counts))
+
+# 4. Ensure counts layer exists in v5 (if you previously used other workflow)
+# If your assay already has layers (e.g., counts stored as layer), GetAssayData will fetch correctly
+if (!("counts" %in% names(seu_spatial[["Spatial"]]@layers))) {
+  # keep counts as layer for consistency
+  seu_spatial[["Spatial"]]@layers[["counts"]] <- GetAssayData(seu_spatial, assay = "Spatial", slot = "counts")
+}
+
+# 5. Remove zero-UMI or NA spots (robust)
+counts_layer <- GetAssayData(seu_spatial, assay = "Spatial", layer = "counts")
+umi_counts <- Matrix::colSums(counts_layer)           # sums per spot
+summary(umi_counts)
+
+# identify cells with >0 UMIs and not NA
+cells_to_keep <- names(umi_counts)[!is.na(umi_counts) & (umi_counts > 0)]
+message("Keeping ", length(cells_to_keep), " / ", length(umi_counts), " spots with >0 UMIs")
+
+if (length(cells_to_keep) == 0) stop("No spots with >0 UMIs found - check your counts matrix.")
+
+# Subset the Seurat object (this will update layers internally in v5)
 seu_spatial <- subset(seu_spatial, cells = cells_to_keep)
 
-# Verify
-summary(colSums(seu_spatial[["Spatial"]]@layers[["counts"]]))
+# Verify no zero UMIs remain
+counts_after <- GetAssayData(seu_spatial, assay = "Spatial", layer = "counts")
+summary_after <- summary(Matrix::colSums(counts_after))
+message("After subsetting UMI summary:\n", paste(capture.output(summary_after), collapse = "\n"))
+if (summary_after["Min."] < 1) {
+  stop("Some spots still have zero UMIs after subsetting. Aborting. Inspect object layers and names.")
+}
 
-# -------------------------------
-# 4. Normalize with SCTransform
-# -------------------------------
-# Optional: install glmGamPoi for faster estimation
-# install.packages("BiocManager")
-# BiocManager::install("glmGamPoi")
-
+# 6. Run SCTransform (create SCT assay)
 DefaultAssay(seu_spatial) <- "Spatial"
+message("Running SCTransform (this may take a while)...")
+if (requireNamespace("glmGamPoi", quietly = TRUE)) {
+  seu_spatial <- SCTransform(seu_spatial, assay = "Spatial", new.assay.name = "SCT", method = "glmGamPoi", verbose = TRUE)
+} else {
+  seu_spatial <- SCTransform(seu_spatial, assay = "Spatial", new.assay.name = "SCT", verbose = TRUE)
+}
 
-seu_spatial <- SCTransform(
-  seu_spatial,
-  assay = "Spatial",
-  verbose = TRUE
-)
+# set SCT as default for downstream normalized analyses
+DefaultAssay(seu_spatial) <- "SCT"
 
-# -------------------------------
-# 5. Dimensional reduction
-# -------------------------------
+# 7. Dimensionality reduction + clustering
 seu_spatial <- RunPCA(seu_spatial, verbose = FALSE)
 seu_spatial <- FindNeighbors(seu_spatial, dims = 1:20)
-seu_spatial <- FindClusters(seu_spatial, resolution = 0.5)
+seu_spatial <- FindClusters(seu_spatial, resolution = 0.5)   # tune resolution as needed
 seu_spatial <- RunUMAP(seu_spatial, dims = 1:20)
 
-# -------------------------------
-# 6. Visualize clusters
-# -------------------------------
-DimPlot(seu_spatial, reduction = "umap", group.by = "seurat_clusters") +
-  ggtitle("UMAP of Spatial Clusters")
+# 8. Save Seurat object intermediate
+saveRDS(seu_spatial, file = file.path(out_dir, "seu_spatial_SCT.rds"))
 
-# Optional: plot spatial feature plots for top genes
-top_genes <- head(rownames(seu_spatial), 10)  # pick top 10 genes for example
-SpatialFeaturePlot(seu_spatial, features = top_genes)
+# 9. Plot UMAP & save
+p_umap <- DimPlot(seu_spatial, reduction = "umap", group.by = "seurat_clusters", label = TRUE) + ggtitle("UMAP - Seurat clusters")
+ggsave(filename = file.path(out_dir, "UMAP_clusters.png"), plot = p_umap, width = 8, height = 6, dpi = 300)
 
-# -------------------------------
-# 7. Save Seurat object
-# -------------------------------
-saveRDS(seu_spatial, file = "seu_spatial_filtered.rds")
+# 10. Spatial scatter plot using coords in metadata (if you have x,y)
+if (all(c("x","y") %in% colnames(seu_spatial@meta.data))) {
+  coords_df <- data.frame(x = seu_spatial@meta.data$x, y = seu_spatial@meta.data$y, cluster = seu_spatial$seurat_clusters, spot = rownames(seu_spatial@meta.data))
+  p_spat <- ggplot(coords_df, aes(x = x, y = y, color = factor(cluster))) +
+    geom_point(size = 0.6) + scale_color_viridis_d() + theme_void() + coord_fixed() +
+    ggtitle("Spatial clusters (no image)")
+  ggsave(filename = file.path(out_dir, "spatial_clusters_coords.png"), plot = p_spat, width = 8, height = 6, dpi = 300)
+} else {
+  message("No x,y coordinates found in metadata; skipping coordinate spatial plot.")
+}
 
-# -------------------------------
-# 8. Save UMAP plot
-# -------------------------------
-umap_plot <- DimPlot(seu_spatial, reduction = "umap", group.by = "seurat_clusters")
-ggsave("UMAP_clusters.png", plot = umap_plot, width = 8, height = 6, dpi = 300)
+# 11. Find cluster markers (DE genes)
+message("Finding cluster markers (FindAllMarkers). This may take time...")
+DefaultAssay(seu_spatial) <- "SCT"
+# Use test.use = "wilcox" (default) or other. Adjust min.pct and logfc.threshold to taste.
+cluster_markers <- FindAllMarkers(
+  object = seu_spatial,
+  assay = "SCT",
+  slot = "data",
+  only.pos = TRUE,
+  min.pct = 0.05,
+  logfc.threshold = 0.25
+)
 
-# -------------------------------
-# 9. (Optional) Save Spatial counts and metadata
-# -------------------------------
-saveRDS(spatial_counts, file = "spatial_counts_filtered.rds")
-saveRDS(seu_spatial@meta.data, file = "spatial_metadata.rds")
+# Save markers
+write.csv(cluster_markers, file = file.path(out_dir, "cluster_markers_all.csv"), row.names = FALSE)
+# Top N per cluster
+topN <- cluster_markers %>% group_by(cluster) %>% slice_max(order_by = avg_log2FC, n = 10)
+write.csv(topN, file = file.path(out_dir, "cluster_top10_markers.csv"), row.names = FALSE)
+
+# 12. Heatmap of top markers (subset to reasonable size)
+library(pheatmap)
+top_genes <- unique(topN$gene)
+# extract scaled / normalized data for heatmap (SCT -> data slot)
+expr_mat <- as.matrix(GetAssayData(seu_spatial, assay = "SCT", slot = "data")[top_genes, , drop = FALSE])
+# To avoid huge heatmap, sample columns if too many spots
+n_spots_plot <- ncol(expr_mat)
+if (n_spots_plot > 2000) {
+  message("Large number of spots (", n_spots_plot, "); sampling 2000 spots for heatmap to avoid memory issues.")
+  set.seed(42)
+  cols_sample <- sample(colnames(expr_mat), 2000)
+  expr_mat_plot <- expr_mat[, cols_sample, drop = FALSE]
+} else expr_mat_plot <- expr_mat
+
+pheatmap::pheatmap(expr_mat_plot, show_colnames = FALSE, filename = file.path(out_dir, "top_markers_heatmap.png"), width = 10, height = 8)
+
+# 13. Optional: Integrate RCTD if a reference_obj is found
+if (file.exists(reference_obj_path)) {
+  message("reference object found - attempting RCTD run (this step is optional & may take time).")
+  reference_obj <- readRDS(reference_obj_path)
+  # Subset common genes
+  common_genes <- intersect(rownames(GetAssayData(seu_spatial, assay = "SCT", slot = "data")), rownames(reference_obj@counts))
+  message("Common genes between spatial and reference: ", length(common_genes))
+  # Build SpatialRNA object for spacexr::create.RCTD (requires counts dgCMatrix and coords)
+  library(spacexr)
+  spatial_counts_common <- GetAssayData(seu_spatial, assay = "Spatial", layer = "counts")[common_genes, , drop = FALSE]
+  # create coords df if present, else dummy
+  if (all(c("x","y") %in% colnames(seu_spatial@meta.data))) {
+    coords_df <- seu_spatial@meta.data[, c("x","y"), drop = FALSE]
+  } else {
+    coords_df <- data.frame(x = seq_len(ncol(spatial_counts_common)), y = seq_len(ncol(spatial_counts_common)))
+    rownames(coords_df) <- colnames(spatial_counts_common)
+  }
+  spatial_obj_rctd <- SpatialRNA(counts = spatial_counts_common, coords = coords_df)
+  # choose UMI_min_sigma appropriate to your data (median UMIs)
+  spot_umis <- Matrix::colSums(spatial_counts_common)
+  umi_med <- median(spot_umis)
+  umi_min_sigma <- max(5, floor(umi_med/2))  # heuristic
+  message("Using UMI_min_sigma = ", umi_min_sigma)
+  rctd <- create.RCTD(spatial = spatial_obj_rctd, reference = reference_obj, max_cores = 4, UMI_min_sigma = umi_min_sigma)
+  rctd <- run.RCTD(rctd)
+  weights <- rctd@results$weights
+  saveRDS(rctd, file = file.path(out_dir, "rctd_full_object.rds"))
+  saveRDS(weights, file = file.path(out_dir, "rctd_weights_matrix.rds"))
+  write.csv(weights, file = file.path(out_dir, "rctd_weights_matrix.csv"))
+  message("RCTD finished and weights saved.")
+}
+
+# 14. Save important outputs & workspace
+saveRDS(seu_spatial, file = file.path(out_dir, "seu_spatial_final.rds"))
+saveRDS(cluster_markers, file = file.path(out_dir, "cluster_markers_full.rds"))
+save.image(file = file.path(out_dir, "full_session_workspace.RData"))
+
+message("All done. Results saved under: ", normalizePath(out_dir))
+message("Files saved: seu_spatial_final.rds, cluster_markers_all.csv, cluster_top10_markers.csv, top_markers_heatmap.png, UMAP_clusters.png, spatial_clusters_coords.png (if coords), full_session_workspace.RData")
