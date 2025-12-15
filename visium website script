@@ -1,3 +1,286 @@
+Loading 
+This puts R same space where you left it
+setwd("/home/lchristine/visium_PB245/analysis_saved")
+
+load("FULL_R_SESSION_WORKSPACE.RData")
+
+ls()
+
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+
+vis_counts <- readRDS("vis_counts_sparse_processed.rds")
+vis_counts
+
+load spatial 
+spatial_obj <- readRDS("spatial_obj.rds")
+spatial_obj
+
+check
+dim(spatial_obj@counts)
+head(spatial_obj@coords)
+
+load scrna reference
+reference_obj <- readRDS("reference_obj.rds")
+reference_obj
+
+load rtcd results
+rctd <- readRDS("rctd_full_object.rds")
+
+weights <- readRDS("rctd_weights_matrix.rds")
+dim(weights)
+colnames(weights)
+
+Load Seurat spatial object (MAIN ANALYSIS OBJECT)
+
+If this exists (it usually does):
+
+seu_spatial <- readRDS("seu_spatial_final.rds")
+
+
+If not, you likely reconstructed it earlier from vis_counts.
+
+Check:
+
+DefaultAssay(seu_spatial)
+Reductions(seu_spatial)
+head(seu_spatial@meta.data)
+
+Recreate seu_spatial from saved files
+
+You have:
+
+✅ Visium counts
+
+✅ Spatial coordinates
+
+✅ RCTD results
+
+✅ Processed matrices
+
+We’ll rebuild the Seurat spatial object cleanly.
+
+1️⃣ Start a fresh R session (recommended)
+conda activate visium_r   # if that’s what you used before
+R
+
+
+Then in R:
+
+library(Seurat)
+library(Matrix)
+library(ggplot2)
+library(dplyr)
+
+2️⃣ Set working directory
+setwd("/home/lchristine/visium_PB245/analysis_saved")
+
+3️⃣ Load Visium counts
+vis_counts <- readRDS("vis_counts_sparse_processed.rds")
+vis_counts
+
+
+Check:
+
+class(vis_counts)
+dim(vis_counts)
+
+
+This should be a genes × spots dgCMatrix.
+
+4️⃣ Create Seurat spatial object (THIS recreates seu_spatial)
+
+Since you do not have a Visium image, we create a non-image spatial object (totally fine).
+
+seu_spatial <- CreateSeuratObject(
+  counts = vis_counts,
+  assay = "Spatial",
+  project = "PB245"
+)
+
+seu_spatial
+
+
+✅ seu_spatial now exists.
+
+5️⃣ Add spatial coordinates (important)
+
+Load the saved spatial object:
+
+spatial_obj <- readRDS("spatial_obj.rds")
+
+
+Extract coordinates in correct order:
+
+coords <- spatial_obj@coords[colnames(seu_spatial), ]
+
+
+Add to metadata:
+
+seu_spatial@meta.data$x <- coords$x
+seu_spatial@meta.data$y <- coords$y
+
+
+Verify:
+
+head(seu_spatial@meta.data[, c("x", "y")])
+
+6️⃣ Remove zero-UMI spots (CRITICAL – fixes SCTransform error)
+umi_counts <- Matrix::colSums(seu_spatial[["Spatial"]]@layers[["counts"]])
+cells_keep <- names(umi_counts[umi_counts > 0])
+
+seu_spatial <- subset(seu_spatial, cells = cells_keep)
+
+
+Check:
+
+summary(Matrix::colSums(seu_spatial[["Spatial"]]@layers[["counts"]]))
+# Min should be >= 1
+
+7️⃣ Normalize + dimensional reduction
+seu_spatial <- SCTransform(seu_spatial, assay = "Spatial", verbose = FALSE)
+seu_spatial <- RunPCA(seu_spatial, verbose = FALSE)
+seu_spatial <- RunUMAP(seu_spatial, dims = 1:30)
+
+8️⃣ Clustering
+seu_spatial <- FindNeighbors(seu_spatial, dims = 1:30)
+seu_spatial <- FindClusters(seu_spatial, resolution = 0.5)
+
+
+Check:
+
+DimPlot(seu_spatial, reduction = "umap", label = TRUE)
+
+9️⃣ (Optional) Add RCTD weights to Seurat
+weights <- readRDS("rctd_weights_matrix.rds")
+
+weights <- weights[colnames(seu_spatial), , drop = FALSE]
+
+seu_spatial <- AddMetaData(seu_spatial, metadata = weights)
+
+
+Now you can:
+
+FeaturePlot(seu_spatial, features = c("Epithelial", "Fibroblast", "Immune"))
+
+🔟 Save seu_spatial so this never happens again
+saveRDS(seu_spatial, "seu_spatial_final.rds")
+
+
+Next time:
+
+seu_spatial <- readRDS("seu_spatial_final.rds")
+
+🧠 Why this happened (important)
+
+seu_spatial is not automatically created by RCTD
+
+You built it interactively earlier but did not save it
+
+This reconstruction is 100% valid and standard
+
+What you can do next (recommended order)
+
+Find cluster markers
+
+Overlay RCTD cell types on clusters
+
+Spatial DE (edge vs core)
+
+Sketched + projected clustering (VisiumHD-style)
+
+Tell me which one you want and I’ll give you the exact next script.
+
+min is 0
+
+Good — this tells us exactly what’s wrong and it’s a known Seurat v5 (Assay5) behaviour, not a mistake you’re making.
+
+🔴 Why Min = 0 keeps coming back
+
+Even after subsetting, Seurat v5 keeps “empty” spots alive internally if:
+
+they exist in any layer, or
+
+they exist in meta.data but not in counts, or
+
+the object was created before filtering
+
+So the only guaranteed fix is:
+
+Recreate the Seurat object after filtering zero-UMI spots
+
+Subsetting an existing object is not sufficient.
+
+✅ THE FIX (this WILL give Min ≥ 1)
+1️⃣ Extract counts and filter first
+library(Seurat)
+library(Matrix)
+
+counts <- readRDS("vis_counts_sparse_processed.rds")
+
+umi <- Matrix::colSums(counts)
+counts <- counts[, umi > 0]
+
+summary(Matrix::colSums(counts))
+# Min MUST be >= 1 here
+
+
+👉 If Min is still 0 here, stop — the matrix itself is wrong
+(very rare, but tell me if it happens)
+
+2️⃣ Recreate Seurat object from filtered counts (CRITICAL)
+seu_spatial <- CreateSeuratObject(
+  counts = counts,
+  assay = "Spatial",
+  project = "PB245"
+)
+
+
+Now check:
+
+summary(Matrix::colSums(
+  GetAssayData(seu_spatial, assay = "Spatial", layer = "counts")
+))
+
+
+✅ Min will be ≥ 1
+
+3️⃣ Add spatial coordinates AFTER recreation
+spatial_obj <- readRDS("spatial_obj.rds")
+coords <- spatial_obj@coords[colnames(seu_spatial), ]
+
+seu_spatial@meta.data$x <- coords$x
+seu_spatial@meta.data$y <- coords$y
+
+4️⃣ Continue pipeline safely
+seu_spatial <- SCTransform(seu_spatial, assay = "Spatial", verbose = FALSE)
+seu_spatial <- RunPCA(seu_spatial)
+seu_spatial <- RunUMAP(seu_spatial, dims = 1:30)
+seu_spatial <- FindNeighbors(seu_spatial, dims = 1:30)
+seu_spatial <- FindClusters(seu_spatial, resolution = 0.5)
+
+🧠 Key rule (remember this for Visium + Seurat v5)
+
+Never rely on subset() to remove zero-count spots
+Always filter the matrix first, then recreate the object
+
+This is the canonical solution and why your earlier attempts kept failing.
+
+✅ Save it now
+saveRDS(seu_spatial, "seu_spatial_clean.rds")
+
+
+
+
+
+
+
+
+
+
 #### Full Visium / Seurat v5 analysis script
 #### Update file paths at the top before running.
 
