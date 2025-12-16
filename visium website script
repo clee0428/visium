@@ -309,7 +309,89 @@ saveRDS(seu_spatial, "seu_spatial_clean_processed.rds")
 # -----------------------------
 DimPlot(seu_spatial, reduction = "umap", label = TRUE)
 
+CANT DO ABOVE SCTRANSFORM COZ IT TAKES TOO LONG AND OVERKILL
 
+library(Seurat)
+library(future)
+
+plan("multisession", workers = 4)
+
+# Normalize
+seu_spatial <- NormalizeData(
+  seu_spatial,
+  assay = "Spatial",
+  normalization.method = "LogNormalize",
+  scale.factor = 10000
+)
+
+# -----------------------------
+# 1. Load libraries
+# -----------------------------
+library(Seurat)
+library(future)
+
+# -----------------------------
+# 2. Parallelization
+# -----------------------------
+# For memory safety, use sequential for clustering
+plan("sequential")  
+
+# -----------------------------
+# 3. Reload LogNormalized object
+# -----------------------------
+seu_spatial <- readRDS("seu_spatial_lognorm.rds")
+
+# Set default assay to Spatial
+DefaultAssay(seu_spatial) <- "Spatial"
+
+# -----------------------------
+# 4. Scale data (if not done yet)
+# -----------------------------
+seu_spatial <- ScaleData(seu_spatial, assay = "Spatial")
+
+# -----------------------------
+# 5. PCA
+# -----------------------------
+# Reduce PCs for speed
+seu_spatial <- RunPCA(seu_spatial, npcs = 30, verbose = FALSE)
+
+# -----------------------------
+# 6. Build neighbors graph (memory-safe)
+# -----------------------------
+# Small dims and small k.param to avoid std::bad_alloc
+seu_spatial <- FindNeighbors(
+  seu_spatial,
+  dims = 1:15,   # use fewer PCs
+  k.param = 8    # smaller number of neighbors
+)
+
+# -----------------------------
+# 7. Clustering (Louvain for stability)
+# -----------------------------
+seu_spatial <- FindClusters(
+  seu_spatial,
+  resolution = 0.2,
+  algorithm = 1   # Louvain, less memory than Leiden
+)
+
+# -----------------------------
+# 8. UMAP (fast)
+# -----------------------------
+seu_spatial <- RunUMAP(
+  seu_spatial,
+  dims = 1:15,
+  fast = TRUE
+)
+
+# -----------------------------
+# 9. Save final object
+# -----------------------------
+saveRDS(seu_spatial, "seu_spatial_clustered_umap.rds")
+
+# -----------------------------
+# 10. Quick sanity check
+# -----------------------------
+DimPlot(seu_spatial, reduction = "umap", label = TRUE)
 
 
 
