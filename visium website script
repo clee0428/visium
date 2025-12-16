@@ -255,22 +255,60 @@ coords <- spatial_obj@coords[colnames(seu_spatial), ]
 seu_spatial@meta.data$x <- coords$x
 seu_spatial@meta.data$y <- coords$y
 
-4️⃣ Continue pipeline safely
+library(Seurat)
+library(future)
+
+# -----------------------------
+# 1. Parallelization
+# -----------------------------
+plan("multisession", workers = 4)  # speed up PCA/UMAP
+
+# -----------------------------
+# 2. SCTransform normalization
+# -----------------------------
 seu_spatial <- SCTransform(seu_spatial, assay = "Spatial", verbose = FALSE)
-seu_spatial <- RunPCA(seu_spatial)
-seu_spatial <- RunUMAP(seu_spatial, dims = 1:30)
-seu_spatial <- FindNeighbors(seu_spatial, dims = 1:30)
-seu_spatial <- FindClusters(seu_spatial, resolution = 0.5)
 
-🧠 Key rule (remember this for Visium + Seurat v5)
+# -----------------------------
+# 3. PCA
+# -----------------------------
+seu_spatial <- RunPCA(seu_spatial, verbose = FALSE, npcs = 30)
 
-Never rely on subset() to remove zero-count spots
-Always filter the matrix first, then recreate the object
+# -----------------------------
+# 4. Neighbors
+# -----------------------------
+# Lower k to speed up
+seu_spatial <- FindNeighbors(seu_spatial, dims = 1:20, k.param = 10)
 
-This is the canonical solution and why your earlier attempts kept failing.
+# -----------------------------
+# 5. Clustering
+# -----------------------------
+# Low resolution for Visium, use Leiden algorithm
+seu_spatial <- FindClusters(seu_spatial, resolution = 0.2, algorithm = 4)
 
-✅ Save it now
-saveRDS(seu_spatial, "seu_spatial_clean.rds")
+# -----------------------------
+# 6. UMAP
+# -----------------------------
+# Fast UMAP
+seu_spatial <- RunUMAP(seu_spatial, dims = 1:20, fast = TRUE)
+
+# -----------------------------
+# 7. Add spatial coordinates
+# -----------------------------
+spatial_obj <- readRDS("spatial_obj.rds")
+coords <- spatial_obj@coords[colnames(seu_spatial), ]
+seu_spatial@meta.data$x <- coords$x
+seu_spatial@meta.data$y <- coords$y
+
+# -----------------------------
+# 8. Save clean object
+# -----------------------------
+saveRDS(seu_spatial, "seu_spatial_clean_processed.rds")
+
+# -----------------------------
+# 9. Quick check
+# -----------------------------
+DimPlot(seu_spatial, reduction = "umap", label = TRUE)
+
 
 
 
