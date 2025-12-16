@@ -255,59 +255,6 @@ coords <- spatial_obj@coords[colnames(seu_spatial), ]
 seu_spatial@meta.data$x <- coords$x
 seu_spatial@meta.data$y <- coords$y
 
-library(Seurat)
-library(future)
-
-# -----------------------------
-# 1. Parallelization
-# -----------------------------
-plan("multisession", workers = 4)  # speed up PCA/UMAP
-
-# -----------------------------
-# 2. SCTransform normalization
-# -----------------------------
-seu_spatial <- SCTransform(seu_spatial, assay = "Spatial", verbose = FALSE)
-
-# -----------------------------
-# 3. PCA
-# -----------------------------
-seu_spatial <- RunPCA(seu_spatial, verbose = FALSE, npcs = 30)
-
-# -----------------------------
-# 4. Neighbors
-# -----------------------------
-# Lower k to speed up
-seu_spatial <- FindNeighbors(seu_spatial, dims = 1:20, k.param = 10)
-
-# -----------------------------
-# 5. Clustering
-# -----------------------------
-# Low resolution for Visium, use Leiden algorithm
-seu_spatial <- FindClusters(seu_spatial, resolution = 0.2, algorithm = 4)
-
-# -----------------------------
-# 6. UMAP
-# -----------------------------
-# Fast UMAP
-seu_spatial <- RunUMAP(seu_spatial, dims = 1:20, fast = TRUE)
-
-# -----------------------------
-# 7. Add spatial coordinates
-# -----------------------------
-spatial_obj <- readRDS("spatial_obj.rds")
-coords <- spatial_obj@coords[colnames(seu_spatial), ]
-seu_spatial@meta.data$x <- coords$x
-seu_spatial@meta.data$y <- coords$y
-
-# -----------------------------
-# 8. Save clean object
-# -----------------------------
-saveRDS(seu_spatial, "seu_spatial_clean_processed.rds")
-
-# -----------------------------
-# 9. Quick check
-# -----------------------------
-DimPlot(seu_spatial, reduction = "umap", label = TRUE)
 
 CANT DO ABOVE SCTRANSFORM COZ IT TAKES TOO LONG AND OVERKILL
 
@@ -324,79 +271,29 @@ seu_spatial <- NormalizeData(
   scale.factor = 10000
 )
 
-# -----------------------------
-# 1. Load libraries
-# -----------------------------
 library(Seurat)
 library(future)
 
-# -----------------------------
-# 2. Parallelization
-# -----------------------------
-# For memory safety, use sequential for clustering
-plan("sequential")  
+plan("sequential")  # safer for memory
 
-# -----------------------------
-# 3. Reload LogNormalized object
-# -----------------------------
 seu_spatial <- readRDS("seu_spatial_lognorm.rds")
-
-# Set default assay to Spatial
 DefaultAssay(seu_spatial) <- "Spatial"
 
-# -----------------------------
-# 4. Scale data (if not done yet)
-# -----------------------------
-seu_spatial <- ScaleData(seu_spatial, assay = "Spatial")
+# Use fewer PCs and smaller neighborhood to save memory
+dims_use <- 10
+k_use <- 5
 
-# -----------------------------
-# 5. PCA
-# -----------------------------
-# Reduce PCs for speed
-seu_spatial <- RunPCA(seu_spatial, npcs = 30, verbose = FALSE)
+# Build neighbors
+seu_spatial <- FindNeighbors(seu_spatial, dims = 1:dims_use, k.param = k_use)
 
-# -----------------------------
-# 6. Build neighbors graph (memory-safe)
-# -----------------------------
-# Small dims and small k.param to avoid std::bad_alloc
-seu_spatial <- FindNeighbors(
-  seu_spatial,
-  dims = 1:15,   # use fewer PCs
-  k.param = 8    # smaller number of neighbors
-)
+# Clustering (Louvain, low memory)
+seu_spatial <- FindClusters(seu_spatial, resolution = 0.2, algorithm = 1)
 
-# -----------------------------
-# 7. Clustering (Louvain for stability)
-# -----------------------------
-seu_spatial <- FindClusters(
-  seu_spatial,
-  resolution = 0.2,
-  algorithm = 1   # Louvain, less memory than Leiden
-)
+# UMAP (fast)
+seu_spatial <- RunUMAP(seu_spatial, dims = 1:dims_use, fast = TRUE)
 
-# -----------------------------
-# 8. UMAP (fast)
-# -----------------------------
-seu_spatial <- RunUMAP(
-  seu_spatial,
-  dims = 1:15,
-  fast = TRUE
-)
-
-# -----------------------------
-# 9. Save final object
-# -----------------------------
-saveRDS(seu_spatial, "seu_spatial_clustered_umap.rds")
-
-# -----------------------------
-# 10. Quick sanity check
-# -----------------------------
-DimPlot(seu_spatial, reduction = "umap", label = TRUE)
-
-
-
-
-
+# Save final object
+saveRDS(seu_spatial, "seu_spatial_clustered_safe.rds")
 
 
 
