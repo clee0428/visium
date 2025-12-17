@@ -180,3 +180,116 @@ p1 <- DimPlot(seu_scrna_sub, reduction = "umap", group.by = "major_compartment",
 p2 <- DimPlot(seu_scrna_sub, reduction = "umap", group.by = "cell_type", label = TRUE) + ggtitle("Fine cell types (scRNA)")
 p1 + p2
 
+
+barplots
+
+library(ggplot2)
+library(dplyr)
+library(patchwork)  # for combining plots
+
+# -----------------------------
+# 1️⃣ scRNA-seq: Major compartments
+# -----------------------------
+df_scrna_major <- data.frame(
+  compartment = seu_scrna_sub$major_compartment
+)
+
+p1 <- ggplot(df_scrna_major, aes(x = compartment, fill = compartment)) +
+  geom_bar() +
+  theme_minimal() +
+  ggtitle("scRNA-seq: Major Compartments") +
+  ylab("Cell count") +
+  xlab("Compartment") +
+  scale_fill_brewer(palette = "Set2")
+
+# -----------------------------
+# 2️⃣ scRNA-seq: Fine cell types
+# -----------------------------
+df_scrna_fine <- data.frame(
+  cell_type = seu_scrna_sub$cell_type
+)
+
+p2 <- ggplot(df_scrna_fine, aes(x = cell_type, fill = cell_type)) +
+  geom_bar() +
+  theme_minimal() +
+  ggtitle("scRNA-seq: Fine Cell Types") +
+  ylab("Cell count") +
+  xlab("Cell type") +
+  scale_fill_brewer(palette = "Set3") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# -----------------------------
+# 3️⃣ Spatial: Predicted major compartments
+# -----------------------------
+df_spatial_major <- data.frame(
+  compartment = seu_spatial_image$predicted_compartment
+)
+
+p3 <- ggplot(df_spatial_major, aes(x = compartment, fill = compartment)) +
+  geom_bar() +
+  theme_minimal() +
+  ggtitle("Spatial: Predicted Major Compartments") +
+  ylab("Spot count") +
+  xlab("Compartment") +
+  scale_fill_brewer(palette = "Set2")
+
+# -----------------------------
+# 4️⃣ Spatial: Predicted fine cell types
+# -----------------------------
+df_spatial_fine <- data.frame(
+  cell_type = seu_spatial_image$predicted_celltype
+)
+
+p4 <- ggplot(df_spatial_fine, aes(x = cell_type, fill = cell_type)) +
+  geom_bar() +
+  theme_minimal() +
+  ggtitle("Spatial: Predicted Fine Cell Types") +
+  ylab("Spot count") +
+  xlab("Cell type") +
+  scale_fill_brewer(palette = "Set3") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# -----------------------------
+# Combine all four plots in 2x2 layout
+# -----------------------------
+(p1 | p2) / (p3 | p4)
+
+
+
+library(ggplot2)
+library(dplyr)
+
+# -----------------------------
+# 1️⃣ Major compartments
+# -----------------------------
+df_compartment <- data.frame(
+  compartment = seu_scrna_sub$major_compartment
+)
+
+ggplot(df_compartment, aes(x = compartment, fill = compartment)) +
+  geom_bar() +
+  theme_minimal() +
+  ggtitle("Major Compartments (scRNA)") +
+  ylab("Number of cells") +
+  xlab("Compartment") +
+  scale_fill_brewer(palette = "Set2") +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5)
+
+# -----------------------------
+# 2️⃣ Fine cell types
+# -----------------------------
+df_celltype <- data.frame(
+  cell_type = seu_scrna_sub$cell_type
+)
+
+ggplot(df_celltype, aes(x = cell_type, fill = cell_type)) +
+  geom_bar() +
+  theme_minimal() +
+  ggtitle("Fine Cell Types (scRNA)") +
+  ylab("Number of cells") +
+  xlab("Cell type") +
+  scale_fill_brewer(palette = "Set3") +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
