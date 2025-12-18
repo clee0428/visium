@@ -182,3 +182,114 @@ saveRDS(
 Reload anytime:
 
 seu_trim <- readRDS("PB245_visiumHD_8um_annotated.rds")
+
+
+ADditional things
+
+1) Save two objects: “analysis” and “presentation”
+
+Downsampling is only for plotting. Keep DEGs on the full seu_trim.
+
+# Save the full analysis object
+saveRDS(seu_trim, "PB245_visiumHD_8um_ANALYSIS.rds")
+
+# Save a lightweight plotting object (optional)
+saveRDS(seu_hm, "PB245_visiumHD_8um_PLOT_HEATMAP_3k.rds")
+
+2) Add a QC report + plots (so you can justify filtering)
+
+At minimum: nCount, nFeature, percent.mt.
+
+DefaultAssay(seu) <- "Spatial.008um"
+seu[["percent.mt"]] <- PercentageFeatureSet(seu, pattern = "^MT-")
+
+VlnPlot(seu, features = c("nCount_Spatial.008um","nFeature_Spatial.008um","percent.mt"),
+        pt.size = 0.01, ncol = 3)
+
+FeatureScatter(seu, feature1 = "nCount_Spatial.008um", feature2 = "nFeature_Spatial.008um")
+
+
+Then choose cutoffs (your current ones are fine as a starting point).
+
+3) Make DEGs consistent and faster: use PrepSCTFindMarkers only if SCT; otherwise do this
+
+For LogNormalize, it’s fine—just set ident and keep assays consistent:
+
+DefaultAssay(seu_trim) <- "Spatial.008um"
+Idents(seu_trim) <- "cell_identity"
+
+
+Optional: run DE with a fixed test:
+
+deg_ts <- FindMarkers(seu_trim, ident.1="Tumour", ident.2="Stroma",
+                      test.use="wilcox", min.pct=0.25, logfc.threshold=0.25)
+
+4) Add “pseudo-bulk per region” summaries (this makes plots meaningful)
+
+UMAP is just an embedding. You want average expression per compartment:
+
+avg_expr <- AverageExpression(seu_trim, group.by = "cell_identity", assays = "Spatial.008um")
+write.csv(avg_expr$Spatial.008um, "PB245_avgexpr_by_cell_identity.csv")
+
+5) Spatially variable genes (SVGs) – but use a method that won’t allocate 700 GB
+
+Moran’s I on 8µm can explode. Use a lighter method / subset features:
+
+DefaultAssay(seu_trim) <- "Spatial.008um"
+seu_trim <- FindSpatiallyVariableFeatures(
+  seu_trim,
+  selection.method = "markvariogram",   # usually lighter than moransi
+  features = VariableFeatures(seu_trim)[1:1000]
+)
+svg <- head(SpatiallyVariableFeatures(seu_trim), 12)
+p_svg <- SpatialFeaturePlot(seu_trim, features = svg, alpha = c(0.1, 1))
+ggsave("PB245_SVG_markvariogram_top12.pdf", p_svg, width=12, height=8)
+
+
+(If you really want Moran’s I, do it on downsampled cells or smaller feature sets.)
+
+6) Add composition plots (what you asked for): counts + percentages barplots
+library(dplyr); library(ggplot2)
+
+df_comp <- as.data.frame(table(seu_trim$cell_identity))
+colnames(df_comp) <- c("cell_identity","n")
+df_comp <- df_comp %>% mutate(pct = 100*n/sum(n))
+
+p_counts <- ggplot(df_comp, aes(x=cell_identity, y=n)) +
+  geom_col() + theme_classic() + labs(x=NULL, y="Bins")
+
+p_pct <- ggplot(df_comp, aes(x=cell_identity, y=pct)) +
+  geom_col() + theme_classic() + labs(x=NULL, y="% of bins") +
+  scale_y_continuous(limits=c(0,100))
+
+ggsave("PB245_cell_identity_counts.pdf", p_counts, width=5, height=4)
+ggsave("PB245_cell_identity_percent.pdf", p_pct, width=5, height=4)
+
+7) Export a “results folder” structure + session info (reproducibility)
+
+At the end of the script:
+
+dir.create("PB245_visiumHD_spatial_only/results", recursive=TRUE, showWarnings=FALSE)
+dir.create("PB245_visiumHD_spatial_only/figures", recursive=TRUE, showWarnings=FALSE)
+
+writeLines(capture.output(sessionInfo()),
+           "PB245_visiumHD_spatial_only/sessionInfo.txt")
+
+8) (Optional but recommended) Separate Immune into T/B/Myeloid properly
+
+Right now TAM has 33 bins—DE vs Immune will be unstable. Consider:
+
+keep TAM for mapping only
+
+do DE immune subtype after reclustering only immune bins
+
+seu_imm <- subset(seu_trim, subset = cell_identity %in% c("Immune","Macrophage_TAM"))
+seu_imm <- FindVariableFeatures(seu_imm)
+seu_imm <- ScaleData(seu_imm)
+seu_imm <- RunPCA(seu_imm)
+seu_imm <- FindNeighbors(seu_imm, dims=1:20)
+seu_imm <- FindClusters(seu_imm, resolution=0.6)
+seu_imm <- RunUMAP(seu_imm, dims=1:20)
+
+
+
