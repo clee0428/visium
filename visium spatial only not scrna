@@ -1,151 +1,185 @@
-Here’s a full “final” Visium HD (binned) Seurat v5 pipeline that does pure Visium-HD analysis (no scRNA reference) and works cleanly whether your assay is "Spatial.008um" or "Spatial.016um".
+Below is a full, end-to-end Visium HD (PB245) pipeline WITHOUT scRNA, written to match what you actually have (Space Ranger binned_outputs with square_008um, 016um, etc.) and the RAM constraints you hit (no full-graph clustering on 567k bins).
 
-Assumes you already have a Seurat object like seu_spatial_image with assays Spatial.008um / Spatial.016um and that SpatialDimPlot() works.
+It’s split into: A) Build object, B) HD-safe clustering via sketch + projection, C) Biological annotation, D) DEGs + plots, E) Save/reload.
 
-0) Setup + choose bin size (8 µm recommended)
+A) Build / load the Seurat object
+Option A1 — If you already have a good saved Seurat object
 library(Seurat)
 library(ggplot2)
-library(patchwork)
+library(dplyr)
 
-# Load
-seu_spatial_image <- readRDS("/home/lchristine/visium_PB245/PB245_spatial_final.rds")
+seu <- readRDS("/home/lchristine/visium_PB245/PB245_visiumHD_8um_annotated_full.rds")
 
-# Pick one:
-DefaultAssay(seu_spatial_image) <- "Spatial.008um"
-# DefaultAssay(seu_spatial_image) <- "Spatial.016um"
+Option A2 — Create from Space Ranger binned_outputs (recommended if starting fresh)
 
-assay_use <- DefaultAssay(seu_spatial_image)
-assay_use
+Your folder is like:
+.../outs/binned_outputs/ containing square_008um, square_016um, etc.
 
-1) Confirm layers + basic sanity checks (Seurat v5)
-Assays(seu_spatial_image)
-Layers(seu_spatial_image[[assay_use]])
+library(Seurat)
+library(ggplot2)
+library(dplyr)
 
-# counts present?
-GetAssayData(seu_spatial_image, layer = "counts")[1:3, 1:3]
+base <- "/home/lchristine/visium/visium_tar/GIMR_GGP_MARPAJ_20250625_Visium/PB245/spaceranger_count_cytassist/PB245/outs/binned_outputs"
 
-2) QC metrics + filtering (crucial for binned HD)
-2a) Add percent.mt and basic QC
-seu_spatial_image[["percent.mt"]] <- PercentageFeatureSet(seu_spatial_image, pattern = "^MT-")
-
-qc_features <- c(
-  paste0("nCount_", assay_use),
-  paste0("nFeature_", assay_use),
-  "percent.mt"
+# Seurat can read Visium HD bins; depending on Seurat version, use Load10X_Spatial with binning
+# If your object already exists, skip this step and load the RDS.
+seu <- Load10X_Spatial(
+  data.dir = base,
+  bin.size = 8   # creates an 8um object if supported
 )
 
-VlnPlot(seu_spatial_image, features = qc_features, ncol = 3, pt.size = 0.1)
 
-2b) Filter (start conservative; adjust after looking at violin plots)
-count_col   <- paste0("nCount_", assay_use)
-feat_col    <- paste0("nFeature_", assay_use)
+If Load10X_Spatial(..., bin.size=8) doesn’t work in your install, don’t force it—use your existing .rds that already contains Spatial.008um.
 
-seu_spatial_image <- subset(
-  seu_spatial_image,
-  subset = get(count_col) > 200 & get(feat_col) > 100 & percent.mt < 20
+B) Visium HD-safe clustering (sketch only) + projection
+1) Set assay to 8 µm
+DefaultAssay(seu) <- "Spatial.008um"
+Assays(seu)
+Layers(seu[["Spatial.008um"]])
+
+2) Basic QC (optional but good)
+VlnPlot(seu, features = c("nCount_Spatial.008um","nFeature_Spatial.008um"), pt.size = 0)
+
+3) Normalize + HVGs (on full object OK)
+seu <- NormalizeData(seu)
+seu <- FindVariableFeatures(seu, nfeatures = 2000)
+
+4) (Optional but helpful) PCA on FULL with “full” name
+
+This lets us project later without recomputing everything.
+
+seu <- ScaleData(seu, features = VariableFeatures(seu), verbose = FALSE)
+seu <- RunPCA(seu, npcs = 30, features = VariableFeatures(seu), reduction.name = "pca.full")
+
+5) Make a sketch (Uniform works in your Seurat; LeverageScore was too slow)
+seu <- SketchData(
+  seu,
+  assay = "Spatial.008um",
+  ncells = 30000,        # 30k–50k is typical; keep 30k for stability
+  method = "Uniform"
 )
 
-3) Normalize + HVGs + Scale + PCA (expression-only)
-seu_spatial_image <- NormalizeData(seu_spatial_image, normalization.method = "LogNormalize", scale.factor = 1e4)
-seu_spatial_image <- FindVariableFeatures(seu_spatial_image, selection.method = "vst", nfeatures = 3000)
+6) Cluster ON SKETCH
+DefaultAssay(seu) <- "sketch"
 
-seu_spatial_image <- ScaleData(seu_spatial_image, features = VariableFeatures(seu_spatial_image))
-seu_spatial_image <- RunPCA(seu_spatial_image, features = VariableFeatures(seu_spatial_image), npcs = 50)
+seu <- NormalizeData(seu)
+seu <- FindVariableFeatures(seu, nfeatures = 2000)
+seu <- ScaleData(seu, features = VariableFeatures(seu), verbose = FALSE)
+seu <- RunPCA(seu, npcs = 30, features = VariableFeatures(seu))
 
-ElbowPlot(seu_spatial_image, ndims = 50)
+seu <- FindNeighbors(seu, dims = 1:20, nn.method = "annoy", k.param = 20)
+seu <- FindClusters(seu, resolution = 0.4)
+seu <- RunUMAP(seu, dims = 1:20)
 
-4) Clustering + UMAP (unsupervised)
-dims_use <- 1:30   # adjust using elbow plot
-seu_spatial_image <- FindNeighbors(seu_spatial_image, dims = dims_use)
-seu_spatial_image <- FindClusters(seu_spatial_image, resolution = 0.4)  # try 0.2–1.0
-seu_spatial_image <- RunUMAP(seu_spatial_image, dims = dims_use)
+DimPlot(seu, label = TRUE)   # this is sketch UMAP
 
-DimPlot(seu_spatial_image, label = TRUE) + ggtitle(paste0("UMAP (", assay_use, ")"))
+7) Project sketch clusters back to ALL 8 µm bins
+DefaultAssay(seu) <- "Spatial.008um"
 
-5) Spatial plots (put clusters onto tissue)
-SpatialDimPlot(
-  seu_spatial_image,
-  group.by = "seurat_clusters",
-  label = TRUE,
-  image.alpha = 0.6
-) + ggtitle(paste0("Spatial clusters (", assay_use, ")"))
-
-6) Spatially variable genes (true spatial signal, not just clustering)
-seu_spatial_image <- FindSpatiallyVariableFeatures(
-  seu_spatial_image,
-  assay = assay_use,
-  features = VariableFeatures(seu_spatial_image),
-  selection.method = "moransi"
+seu <- ProjectData(
+  object = seu,
+  assay = "Spatial.008um",
+  sketched.assay = "sketch",
+  sketched.reduction = "pca",
+  full.reduction = "pca.full",
+  dims = 1:20,
+  refdata = list(seurat_clusters = "seurat_clusters")
 )
 
-svg <- head(SpatiallyVariableFeatures(seu_spatial_image, selection.method = "moransi"), 30)
-svg
-SpatialFeaturePlot(seu_spatial_image, features = svg[1:6], alpha = c(0.1, 1))
+# Check the projected fields exist:
+grep("seurat_clusters", colnames(seu@meta.data), value = TRUE)
 
-7) Markers / DEGs (cluster markers)
-markers <- FindAllMarkers(
-  seu_spatial_image,
+
+At this point you have:
+
+seurat_clusters = projected label for each 8 µm bin
+
+seurat_clusters.score = confidence
+
+C) Plot spatial clusters (robust way) + annotate biology
+1) Make a plotting object (avoid Seurat plotting edge cases)
+cells_ok <- Cells(seu)[!is.na(seu$seurat_clusters)]
+seu_plot <- subset(seu, cells = cells_ok)
+
+seu_plot$seurat_clusters <- factor(as.character(seu_plot$seurat_clusters))
+Idents(seu_plot) <- seu_plot$seurat_clusters
+
+2) Spatial plot of numeric clusters
+DefaultAssay(seu_plot) <- "Spatial.008um"
+p_clusters <- SpatialDimPlot(seu_plot, image.alpha = 0.6, label = FALSE)
+p_clusters
+
+3) Define biological mapping (edit if you change your mind)
+
+Example based on your work:
+
+tumour_clusters <- c("10","0")
+stroma_clusters <- c("1")
+immune_clusters <- c("2","3")
+tam_clusters    <- c("7","9")
+
+4) Create biological labels
+seu$cell_identity <- NA
+seu$cell_identity[seu$seurat_clusters %in% tumour_clusters] <- "Tumour"
+seu$cell_identity[seu$seurat_clusters %in% stroma_clusters] <- "Stroma"
+seu$cell_identity[seu$seurat_clusters %in% immune_clusters] <- "Immune"
+seu$cell_identity[seu$seurat_clusters %in% tam_clusters]    <- "Macrophage_TAM"
+
+seu$cell_identity <- factor(seu$cell_identity, levels = c("Tumour","Stroma","Immune","Macrophage_TAM"))
+
+5) Plot labelled compartments on tissue
+cells_ok <- Cells(seu)[!is.na(seu$cell_identity)]
+seu_lab <- subset(seu, cells = cells_ok)
+
+Idents(seu_lab) <- seu_lab$cell_identity
+
+p_comp <- SpatialDimPlot(seu_lab, image.alpha = 0.6, label = FALSE)
+p_comp
+
+D) DEGs + interpretable plots (DotPlot + average heatmap)
+1) Subset for DE (optional: keep only high-confidence projected bins)
+seu_id <- seu_lab
+# optional confidence filter:
+# seu_id <- subset(seu_lab, subset = seurat_clusters.score > 0.5)
+
+DefaultAssay(seu_id) <- "Spatial.008um"
+Idents(seu_id) <- "cell_identity"
+
+2) DEGs by compartment
+markers_all <- FindAllMarkers(
+  seu_id,
   only.pos = TRUE,
   min.pct = 0.25,
   logfc.threshold = 0.25
 )
 
-# Save
-write.csv(markers, paste0("PB245_", assay_use, "_cluster_markers.csv"), row.names = FALSE)
-head(markers)
+write.csv(markers_all, "PB245_DEGs_by_cell_identity.csv", row.names = FALSE)
 
-8) Manual annotation without scRNA (compartments)
-8a) Inspect canonical markers on tissue
-SpatialFeaturePlot(
-  seu_spatial_image,
-  features = c("EPCAM", "KRT19", "KRT8", "KRT18",    # epithelial
-               "COL1A1", "COL1A2", "DCN", "LUM",    # fibroblast/stroma
-               "PTPRC", "CD3D", "MS4A1", "NKG7",    # immune
-               "PECAM1", "VWF")                     # endothelial
+3) DotPlot (best for readability) + save
+library(ggplot2)
+
+genes_show <- c(
+  "EPCAM","KRT19","MMP7","CEACAM6",
+  "COL1A1","COL1A2","COL3A1","DCN","LUM",
+  "PTPRC","IGKC",
+  "LYZ","SPP1","LGALS3","MARCO"
 )
+genes_show <- intersect(genes_show, rownames(seu_id))
 
-8b) Create a compartment label (edit cluster numbers after you inspect)
-# Example mapping — YOU MUST EDIT this after checking plots
-cluster_to_compartment <- c(
-  "0" = "Epithelial",
-  "1" = "Fibroblast",
-  "2" = "Immune",
-  "3" = "Epithelial",
-  "4" = "Stroma/Other"
-)
+p_dot <- DotPlot(seu_id, features = genes_show, group.by = "cell_identity") +
+  RotatedAxis()
 
-seu_spatial_image$compartment <- unname(cluster_to_compartment[as.character(seu_spatial_image$seurat_clusters)])
+p_dot
+ggsave("PB245_dotplot_cell_identity.pdf", p_dot, width = 9, height = 4.5)
+ggsave("PB245_dotplot_cell_identity.png", p_dot, width = 9, height = 4.5, dpi = 300)
 
-SpatialDimPlot(seu_spatial_image, group.by = "compartment", label = TRUE, image.alpha = 0.6) +
-  ggtitle(paste0("Compartments (", assay_use, ")"))
+E) Save / reload (checkpointing)
+Save everything important
+saveRDS(seu, "PB245_visiumHD_8um_full_projected.rds")
+saveRDS(seu_lab, "PB245_visiumHD_8um_labelled_onlybins.rds")
+saveRDS(seu_id, "PB245_visiumHD_8um_DEsubset.rds")
+save.image("PB245_visiumHD_without_scRNA_session.RData")
 
-9) Compartment-level DEGs (optional but useful)
-Idents(seu_spatial_image) <- "compartment"
-
-comp_markers <- FindAllMarkers(
-  seu_spatial_image,
-  only.pos = TRUE,
-  min.pct = 0.25,
-  logfc.threshold = 0.25
-)
-
-write.csv(comp_markers, paste0("PB245_", assay_use, "_compartment_markers.csv"), row.names = FALSE)
-
-10) Save everything (do this at the end)
-saveRDS(seu_spatial_image, paste0("PB245_", assay_use, "_Seurat_final.rds"))
-save.image(paste0("PB245_", assay_use, "_session.RData"))
-
-Notes that matter (so you don’t get misled)
-
-This is “no scRNA reference”: you can still find spatial domains, compartments, gradients, and markers.
-
-Binned resolution changes QC + clustering: always QC/filter after switching 16→8.
-
-SpatialDimPlot working is a must: if it fails on the 8 µm assay, your bin assay might not be correctly linked to the image/coords.
-
-If you paste:
-
-Layers(seu_spatial_image[[ "Spatial.008um" ]])
-head(seu_spatial_image@meta.data[, c(paste0("nCount_", DefaultAssay(seu_spatial_image)),
-                                   paste0("nFeature_", DefaultAssay(seu_spatial_image)),
-                                     "percent.mt")])
+Reload later
+library(Seurat)
+seu <- readRDS("PB245_visiumHD_8um_full_projected.rds")
