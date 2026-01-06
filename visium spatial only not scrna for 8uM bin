@@ -320,47 +320,236 @@ seu_16um
 
 If you get an error about images/scale factors, tell me the exact message — but this usually works from square_016um.
 
-2) QC + normalisation + PCA/UMAP (standard Seurat)
-# QC metrics
+############################################################
+## PB245 VisiumHD 16 µm analysis (Seurat v5 safe)
+## QC -> filtering -> normalize/scale -> PCA -> UMAP -> clustering
+## + saves plots + objects + metadata
+############################################################
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(SeuratObject)
+  library(ggplot2)
+  library(dplyr)
+})
+
+## ---------------------------
+## 0) Paths + folders
+## ---------------------------
+
+# Input: 10x binned_outputs folder for 16um
+data_16um <- "/home/lchristine/visium/visium_tar/GIMR_GGP_MARPAJ_20250625_Visium/PB245/spaceranger_count_cytassist/PB245/outs/binned_outputs/square_016um/"
+
+# Project root (as you requested)
+proj_root <- "/home/lchristine/PB245_visium/16uM_analysis/PB245_visiumHD_spatial_only_no_scRNA"
+
+obj_dir  <- file.path(proj_root, "01_seurat_objects")
+fig_dir  <- file.path(proj_root, "02_figures")
+tab_dir  <- file.path(proj_root, "03_tables")
+log_dir  <- file.path(proj_root, "04_logs")
+
+dir.create(obj_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Optional: write session info for reproducibility
+sink(file.path(log_dir, "sessionInfo_16um.txt"))
+print(sessionInfo())
+sink()
+
+## ---------------------------
+## 1) Load 16 µm data
+## ---------------------------
+# NOTE: Load10X_Spatial works for Visium-style outputs.
+# Your folder has:
+#   filtered_feature_bc_matrix.h5
+#   spatial/
+# so this should work.
+
+seu_16um <- Load10X_Spatial(
+  data.dir = data_16um,
+  filename = "filtered_feature_bc_matrix.h5",
+  slice = "slice1.016um"
+)
+
+# Ensure assay name is Spatial
+DefaultAssay(seu_16um) <- "Spatial"
+
+# IMPORTANT for Seurat v5 / your earlier errors:
+# create a "data" layer so plotting functions don't crash trying to find it.
+seu_16um <- NormalizeData(seu_16um, assay = "Spatial", normalization.method = "LogNormalize", scale.factor = 1e4, verbose = FALSE)
+
+# Quick object check
+print(seu_16um)
+
+## ---------------------------
+## 2) QC metrics
+## ---------------------------
+# percent.mt (may be 0 for many bins; that's OK)
 seu_16um[["percent.mt"]] <- PercentageFeatureSet(seu_16um, pattern = "^MT-")
 
-# quick look (optional)
-# VlnPlot(seu_16um, features = c("nCount_Spatial","nFeature_Spatial","percent.mt"), pt.size = 0.1, ncol = 3)
+# Save metadata snapshot before filtering
+write.csv(
+  seu_16um@meta.data,
+  file = file.path(tab_dir, "PB245_16um_metadata_pre_filter.csv"),
+  quote = FALSE
+)
 
-# Filtering (tweak if needed)
+# QC plots (FeatureScatter + violin) - avoid functions that crash in your environment
+p_sc1 <- FeatureScatter(seu_16um, feature1 = "nCount_Spatial", feature2 = "nFeature_Spatial") +
+  theme_classic() + ggtitle("PB245 16um: nCount vs nFeature")
+p_sc2 <- FeatureScatter(seu_16um, feature1 = "nCount_Spatial", feature2 = "percent.mt") +
+  theme_classic() + ggtitle("PB245 16um: nCount vs percent.mt")
+
+ggsave(file.path(fig_dir, "PB245_16um_QC_scatter_nCount_nFeature.png"), p_sc1, width = 6, height = 5, dpi = 300)
+ggsave(file.path(fig_dir, "PB245_16um_QC_scatter_nCount_percentMT.png"), p_sc2, width = 6, height = 5, dpi = 300)
+ggsave(file.path(fig_dir, "PB245_16um_QC_scatter_nCount_nFeature.pdf"), p_sc1, width = 6, height = 5, device = cairo_pdf)
+ggsave(file.path(fig_dir, "PB245_16um_QC_scatter_nCount_percentMT.pdf"), p_sc2, width = 6, height = 5, device = cairo_pdf)
+
+# If VlnPlot works in your session, keep it; if it crashes again, comment out.
+p_vln <- VlnPlot(
+  seu_16um,
+  features = c("nCount_Spatial", "nFeature_Spatial", "percent.mt"),
+  pt.size = 0
+) + NoLegend() + ggtitle("PB245 16um QC (pre-filter)")
+
+ggsave(file.path(fig_dir, "PB245_16um_QC_violin_pre_filter.png"), p_vln, width = 10, height = 4, dpi = 300)
+ggsave(file.path(fig_dir, "PB245_16um_QC_violin_pre_filter.pdf"), p_vln, width = 10, height = 4, device = cairo_pdf)
+
+## ---------------------------
+## 3) Filtering (light, spatial-appropriate)
+## ---------------------------
+# These are the thresholds you already tested (keeps ~94k bins).
 seu_16um <- subset(
   seu_16um,
-  subset = nCount_Spatial > 50 & nFeature_Spatial > 50 & percent.mt < 25
+  subset =
+    nCount_Spatial >= 20 &
+    nFeature_Spatial >= 10 &
+    (is.na(percent.mt) | percent.mt <= 35)
 )
 
-# Normalisation + HVGs + scaling
-seu_16um <- NormalizeData(seu_16um)
-seu_16um <- FindVariableFeatures(seu_16um, selection.method = "vst", nfeatures = 2000)
-seu_16um <- ScaleData(seu_16um)
+# Save metadata after filtering
+write.csv(
+  seu_16um@meta.data,
+  file = file.path(tab_dir, "PB245_16um_metadata_post_filter.csv"),
+  quote = FALSE
+)
 
-# PCA/UMAP + neighbours + clusters
-seu_16um <- RunPCA(seu_16um, npcs = 30, verbose = FALSE)
-seu_16um <- FindNeighbors(seu_16um, dims = 1:30)
-seu_16um <- FindClusters(seu_16um, resolution = 0.5)
-seu_16um <- RunUMAP(seu_16um, dims = 1:30)
+# Quick summary table
+qc_summary <- data.frame(
+  n_bins = ncol(seu_16um),
+  nCount_min = min(seu_16um$nCount_Spatial),
+  nCount_median = median(seu_16um$nCount_Spatial),
+  nCount_mean = mean(seu_16um$nCount_Spatial),
+  nCount_max = max(seu_16um$nCount_Spatial),
+  nFeature_min = min(seu_16um$nFeature_Spatial),
+  nFeature_median = median(seu_16um$nFeature_Spatial),
+  nFeature_mean = mean(seu_16um$nFeature_Spatial),
+  nFeature_max = max(seu_16um$nFeature_Spatial)
+)
+write.csv(qc_summary, file.path(tab_dir, "PB245_16um_QC_summary.csv"), row.names = FALSE, quote = FALSE)
 
-3) Quick plots (overview) + save
-library(ggplot2)
+## ---------------------------
+## 4) Normalization + HVGs + scaling
+## ---------------------------
+# (We already created a data layer above, but redo is fine after filtering)
+seu_16um <- NormalizeData(seu_16um, assay = "Spatial", verbose = FALSE)
 
-p_umap16 <- DimPlot(seu_16um, reduction = "umap", label = TRUE) +
-  theme_classic() + ggtitle("PB245 VisiumHD 16 µm: UMAP")
-
-p_sp16 <- SpatialDimPlot(seu_16um, label = TRUE, label.size = 3) +
-  ggtitle("PB245 VisiumHD 16 µm: Spatial clusters")
-
-ggsave(file.path(base_dir, "16um_analysis/02_figures/PB245_16um_UMAP.png"),
-       p_umap16, width = 7, height = 5, dpi = 300)
-
-ggsave(file.path(base_dir, "16um_analysis/02_figures/PB245_16um_SpatialClusters.png"),
-       p_sp16, width = 7, height = 6, dpi = 300)
-
-4) Save the Seurat object (so you can continue Monday)
-saveRDS(
+seu_16um <- FindVariableFeatures(
   seu_16um,
-  file.path(base_dir, "16um_analysis/01_seurat_objects/seu_16um.rds")
+  assay = "Spatial",
+  selection.method = "vst",
+  nfeatures = 2000,
+  verbose = FALSE
 )
+
+# Scale only HVGs (faster, safer)
+seu_16um <- ScaleData(
+  seu_16um,
+  assay = "Spatial",
+  features = VariableFeatures(seu_16um),
+  verbose = FALSE
+)
+
+## ---------------------------
+## 5) PCA
+## ---------------------------
+seu_16um <- RunPCA(
+  seu_16um,
+  assay = "Spatial",
+  features = VariableFeatures(seu_16um),
+  npcs = 30,
+  verbose = FALSE
+)
+
+p_elbow <- ElbowPlot(seu_16um, ndims = 30) + theme_classic() + ggtitle("PB245 16um ElbowPlot")
+ggsave(file.path(fig_dir, "PB245_16um_ElbowPlot.png"), p_elbow, width = 5.5, height = 4.5, dpi = 300)
+ggsave(file.path(fig_dir, "PB245_16um_ElbowPlot.pdf"), p_elbow, width = 5.5, height = 4.5, device = cairo_pdf)
+
+## ---------------------------
+## 6) Neighbours / clustering / UMAP
+## ---------------------------
+# Use dims 1:10 by default (matches your elbow plot interpretation)
+dims_use <- 1:10
+
+seu_16um <- FindNeighbors(seu_16um, dims = dims_use, verbose = FALSE)
+seu_16um <- FindClusters(seu_16um, resolution = 0.4, verbose = FALSE)
+
+seu_16um <- RunUMAP(seu_16um, dims = dims_use, verbose = FALSE)
+
+# UMAP plot
+p_umap <- DimPlot(seu_16um, reduction = "umap", label = TRUE, repel = TRUE) +
+  theme_classic() + ggtitle("PB245 VisiumHD (16 µm) UMAP (clusters)")
+
+ggsave(file.path(fig_dir, "PB245_16um_UMAP_clusters.png"), p_umap, width = 7, height = 5, dpi = 300)
+ggsave(file.path(fig_dir, "PB245_16um_UMAP_clusters.pdf"), p_umap, width = 7, height = 5, device = cairo_pdf)
+
+# Spatial cluster plot
+p_spatial <- SpatialDimPlot(seu_16um, group.by = "seurat_clusters", label = TRUE, label.size = 3) +
+  ggtitle("PB245 VisiumHD (16 µm) Spatial clusters")
+
+ggsave(file.path(fig_dir, "PB245_16um_Spatial_clusters.png"), p_spatial, width = 7, height = 6, dpi = 300)
+ggsave(file.path(fig_dir, "PB245_16um_Spatial_clusters.pdf"), p_spatial, width = 7, height = 6, device = cairo_pdf)
+
+# Save cluster counts
+clust_counts <- as.data.frame(table(Idents(seu_16um)))
+colnames(clust_counts) <- c("seurat_clusters", "n_bins")
+write.csv(clust_counts, file.path(tab_dir, "PB245_16um_cluster_counts.csv"), row.names = FALSE, quote = FALSE)
+
+## ---------------------------
+## 7) Quick marker genes per cluster (optional but useful)
+## ---------------------------
+# This can take a bit, but is manageable at 16um
+DefaultAssay(seu_16um) <- "Spatial"
+Idents(seu_16um) <- "seurat_clusters"
+
+markers_16um <- FindAllMarkers(
+  seu_16um,
+  only.pos = TRUE,
+  min.pct = 0.1,
+  logfc.threshold = 0.25,
+  test.use = "wilcox"
+)
+
+write.csv(markers_16um, file.path(tab_dir, "PB245_16um_FindAllMarkers.csv"), row.names = FALSE, quote = FALSE)
+
+# Top 10 per cluster table
+top10 <- markers_16um %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 10, with_ties = FALSE) %>%
+  ungroup()
+write.csv(top10, file.path(tab_dir, "PB245_16um_top10_markers_per_cluster.csv"), row.names = FALSE, quote = FALSE)
+
+## ---------------------------
+## 8) Save objects
+## ---------------------------
+saveRDS(seu_16um, file.path(obj_dir, "PB245_seu_16um.rds"))
+
+# Save a full session (optional, big)
+save.image(file.path(obj_dir, "PB245_16um_session.RData"))
+
+message("✅ DONE. Outputs written to: ", proj_root)
+message("   Seurat object: ", file.path(obj_dir, "PB245_seu_16um.rds"))
+message("   Figures:       ", fig_dir)
+message("   Tables:        ", tab_dir)
