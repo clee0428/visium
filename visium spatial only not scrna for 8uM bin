@@ -293,3 +293,74 @@ seu_imm <- RunUMAP(seu_imm, dims=1:20)
 
 
 
+16uM  analysis
+
+0) Set paths + create 16 µm project folders
+base_dir <- "/home/lchristine/PB245_visiumHD_spatial_only_no_scRNA"
+dir.create(base_dir, showWarnings = FALSE)
+
+dir.create(file.path(base_dir, "16um_analysis"), showWarnings = FALSE)
+dir.create(file.path(base_dir, "16um_analysis/01_seurat_objects"), showWarnings = FALSE)
+dir.create(file.path(base_dir, "16um_analysis/02_figures"), showWarnings = FALSE)
+dir.create(file.path(base_dir, "16um_analysis/03_tables"), showWarnings = FALSE)
+
+bin16_dir <- "/home/lchristine/visium/visium_tar/GIMR_GGP_MARPAJ_20250625_Visium/PB245/spaceranger_count_cytassist/PB245/outs/binned_outputs/square_016um"
+
+1) Load 16 µm bins as a NEW Seurat object
+library(Seurat)
+
+seu_16um <- Load10X_Spatial(
+  data.dir = bin16_dir,
+  filename = "filtered_feature_bc_matrix.h5",
+  assay = "Spatial"
+)
+
+seu_16um
+
+
+If you get an error about images/scale factors, tell me the exact message — but this usually works from square_016um.
+
+2) QC + normalisation + PCA/UMAP (standard Seurat)
+# QC metrics
+seu_16um[["percent.mt"]] <- PercentageFeatureSet(seu_16um, pattern = "^MT-")
+
+# quick look (optional)
+# VlnPlot(seu_16um, features = c("nCount_Spatial","nFeature_Spatial","percent.mt"), pt.size = 0.1, ncol = 3)
+
+# Filtering (tweak if needed)
+seu_16um <- subset(
+  seu_16um,
+  subset = nCount_Spatial > 50 & nFeature_Spatial > 50 & percent.mt < 25
+)
+
+# Normalisation + HVGs + scaling
+seu_16um <- NormalizeData(seu_16um)
+seu_16um <- FindVariableFeatures(seu_16um, selection.method = "vst", nfeatures = 2000)
+seu_16um <- ScaleData(seu_16um)
+
+# PCA/UMAP + neighbours + clusters
+seu_16um <- RunPCA(seu_16um, npcs = 30, verbose = FALSE)
+seu_16um <- FindNeighbors(seu_16um, dims = 1:30)
+seu_16um <- FindClusters(seu_16um, resolution = 0.5)
+seu_16um <- RunUMAP(seu_16um, dims = 1:30)
+
+3) Quick plots (overview) + save
+library(ggplot2)
+
+p_umap16 <- DimPlot(seu_16um, reduction = "umap", label = TRUE) +
+  theme_classic() + ggtitle("PB245 VisiumHD 16 µm: UMAP")
+
+p_sp16 <- SpatialDimPlot(seu_16um, label = TRUE, label.size = 3) +
+  ggtitle("PB245 VisiumHD 16 µm: Spatial clusters")
+
+ggsave(file.path(base_dir, "16um_analysis/02_figures/PB245_16um_UMAP.png"),
+       p_umap16, width = 7, height = 5, dpi = 300)
+
+ggsave(file.path(base_dir, "16um_analysis/02_figures/PB245_16um_SpatialClusters.png"),
+       p_sp16, width = 7, height = 6, dpi = 300)
+
+4) Save the Seurat object (so you can continue Monday)
+saveRDS(
+  seu_16um,
+  file.path(base_dir, "16um_analysis/01_seurat_objects/seu_16um.rds")
+)
