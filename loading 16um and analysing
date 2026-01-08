@@ -1,0 +1,123 @@
+A) Terminal: activate conda + start R
+# go to your 16um project folder
+cd /home/lchristine/PB245_visium/16uM_analysis/
+
+# activate your R environment
+conda activate visium_r
+
+# start R
+R
+
+
+If you ever need to exit env later:
+
+conda deactivate
+
+B) In R: load packages + set folders
+library(Seurat)
+library(SeuratObject)
+library(ggplot2)
+library(dplyr)
+
+# project folders
+proj_root_16 <- "/home/lchristine/PB245_visium/16uM_analysis/PB245_visiumHD_spatial_only_no_scRNA"
+obj_dir_16   <- file.path(proj_root_16, "01_seurat_objects")
+fig_dir_16   <- file.path(proj_root_16, "02_figures")
+tab_dir_16   <- file.path(proj_root_16, "03_tables")
+
+dir.create(obj_dir_16, recursive = TRUE, showWarnings = FALSE)
+dir.create(fig_dir_16, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir_16, recursive = TRUE, showWarnings = FALSE)
+
+C) Load 16 µm from Space Ranger binned output (recommended)
+
+Set your Space Ranger folder (this must contain filtered_feature_bc_matrix.h5, spatial/, etc.):
+
+data_16um <- "/home/lchristine/visium/visium_tar/GIMR_GGP_MARPAJ_20250625_Visium/PB245/spaceranger_count_cytassist/PB245/outs/binned_outputs/square_016um"
+
+seu_16um <- Load10X_Spatial(
+  data.dir = data_16um,
+  filename = "filtered_feature_bc_matrix.h5",
+  slice = "slice1.016um"
+)
+
+DefaultAssay(seu_16um) <- "Spatial"
+seu_16um
+
+
+Sanity checks:
+
+ncol(seu_16um)
+head(colnames(seu_16um@meta.data))
+
+D) QC metrics + light filter (same cutoffs you used)
+# mito %
+seu_16um[["percent.mt"]] <- PercentageFeatureSet(seu_16um, pattern = "^MT-")
+
+# light filter (keeps tissue, removes empty bins)
+seu_16um <- subset(
+  seu_16um,
+  subset = nCount_Spatial >= 20 &
+           nFeature_Spatial >= 10 &
+           (is.na(percent.mt) | percent.mt <= 35)
+)
+
+ncol(seu_16um)
+summary(seu_16um$nCount_Spatial)
+summary(seu_16um$nFeature_Spatial)
+summary(seu_16um$percent.mt)
+
+
+Optional: save the filtered object immediately (so you don’t lose it):
+
+saveRDS(seu_16um, file.path(obj_dir_16, "PB245_seu_16um_QCfiltered.rds"))
+
+E) Normalization → HVGs → Scale → PCA
+seu_16um <- NormalizeData(seu_16um)
+seu_16um <- FindVariableFeatures(seu_16um, nfeatures = 2000)
+seu_16um <- ScaleData(seu_16um, features = VariableFeatures(seu_16um))
+seu_16um <- RunPCA(seu_16um, npcs = 30, features = VariableFeatures(seu_16um))
+
+F) Neighbors → clusters → UMAP (use dims 1:20 to start)
+dims_use <- 1:20
+
+seu_16um <- FindNeighbors(seu_16um, dims = dims_use, verbose = FALSE)
+seu_16um <- FindClusters(seu_16um, resolution = 0.4, verbose = FALSE)
+seu_16um <- RunUMAP(seu_16um, dims = dims_use, verbose = FALSE)
+
+table(seu_16um$seurat_clusters)
+
+
+Save object now:
+
+saveRDS(seu_16um, file.path(obj_dir_16, "PB245_seu_16um_UMAP_clusters.rds"))
+save.image(file.path(obj_dir_16, "PB245_16um_session.RData"))
+
+G) Make + save the key figures (UMAP + tissue clusters)
+p_umap <- DimPlot(seu_16um, reduction="umap", label=TRUE, repel=TRUE) +
+  theme_classic() + ggtitle("PB245 16µm – UMAP (Seurat clusters)")
+
+p_spatial <- SpatialDimPlot(seu_16um, group.by="seurat_clusters", label=FALSE, image.alpha=0.6) +
+  ggtitle("PB245 16µm – Spatial clusters")
+
+ggsave(file.path(fig_dir_16, "PB245_16um_UMAP_clusters.png"), p_umap, width=7, height=5, dpi=300)
+ggsave(file.path(fig_dir_16, "PB245_16um_Spatial_clusters.png"), p_spatial, width=7, height=7, dpi=300)
+
+H) Next step: markers (to label clusters into compartments)
+markers_16um <- FindAllMarkers(
+  seu_16um,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+)
+
+write.csv(markers_16um, file.path(tab_dir_16, "PB245_16um_cluster_markers.csv"), row.names = FALSE)
+
+
+Then we use top markers per cluster to build your cluster_to_compartment.
+
+If you want: reload instead of recomputing
+
+If you already saved the clustered object:
+
+seu_16um <- readRDS(file.path(obj_dir_16, "PB245_seu_16um_UMAP_clusters.rds"))
