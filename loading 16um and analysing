@@ -121,3 +121,166 @@ If you want: reload instead of recomputing
 If you already saved the clustered object:
 
 seu_16um <- readRDS(file.path(obj_dir_16, "PB245_seu_16um_UMAP_clusters.rds"))
+
+
+Yep — you want the 3 things for 16 µm:
+
+Marker genes per cluster (table + quick “top markers” view)
+
+Compartment labels (Tumour/Stroma/Immune/TAM/Endothelial/Unknown) added into meta.data
+
+Figures: labelled UMAP, labelled tissue map, and bar plot composition — all saved
+
+Below is a complete, copy/paste block that does all 3 robustly.
+
+0) Make sure packages are loaded
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+
+1) MARKERS (cluster markers + top markers table)
+DefaultAssay(seu_16um) <- "Spatial"
+
+# Make sure identities are clusters
+Idents(seu_16um) <- seu_16um$seurat_clusters
+
+markers_16um <- FindAllMarkers(
+  seu_16um,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+)
+
+# Save full marker table
+write.csv(markers_16um,
+          file.path(tab_dir_16, "PB245_16um_cluster_markers.csv"),
+          row.names = FALSE)
+
+# Top 5 markers per cluster (nice to inspect)
+top_markers_16um <- markers_16um %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 5, with_ties = FALSE) %>%
+  arrange(as.numeric(as.character(cluster)))
+
+write.csv(top_markers_16um,
+          file.path(tab_dir_16, "PB245_16um_top5_markers_per_cluster.csv"),
+          row.names = FALSE)
+
+top_markers_16um
+
+2) COMPARTMENT LABELS (auto-assign from canonical markers + optional manual edits)
+2A) Define canonical marker sets
+marker_sets <- list(
+  Tumour       = c("EPCAM","KRT19","KRT8","KRT18","MSLN","MUC1","CLDN4","CEACAM6","MMP7"),
+  Stroma       = c("COL1A1","COL1A2","COL3A1","DCN","LUM","TAGLN","ACTA2","SPARC"),
+  Immune       = c("PTPRC","CD3D","CD3E","TRAC","MS4A1","CD79A","IGHG1","IGKC","LYZ"),
+  Macrophage_TAM = c("SPP1","MARCO","APOE","LGALS3","C1QA","C1QB","C1QC","MSR1"),
+  Endothelial  = c("PECAM1","VWF","KDR","EMCN","RAMP2","CLDN5"),
+  RBC          = c("HBB","HBA1","HBA2")
+)
+
+2B) Score clusters by average expression of each marker set (fast + stable)
+avg_by_cluster <- AverageExpression(
+  seu_16um,
+  assays = "Spatial",
+  group.by = "seurat_clusters",
+  slot = "data"
+)$Spatial
+
+score_cluster <- function(cluster_genes, expr_mat) {
+  genes <- intersect(cluster_genes, rownames(expr_mat))
+  if (length(genes) == 0) return(rep(NA, ncol(expr_mat)))
+  colMeans(expr_mat[genes, , drop=FALSE])
+}
+
+scores <- sapply(marker_sets, score_cluster, expr_mat = avg_by_cluster)
+scores <- as.data.frame(scores)
+scores$cluster <- colnames(avg_by_cluster)
+
+# Pick best compartment per cluster
+scores$best_compartment <- apply(scores[, names(marker_sets), drop=FALSE], 1, function(x) {
+  if (all(is.na(x))) return("Unknown")
+  nm <- names(which.max(x))
+  if (is.null(nm) || length(nm) == 0) "Unknown" else nm
+})
+
+cluster_to_compartment <- setNames(scores$best_compartment, scores$cluster)
+
+# Add to Seurat object
+seu_16um$compartment <- cluster_to_compartment[as.character(seu_16um$seurat_clusters)]
+table(seu_16um$compartment, useNA="ifany")
+
+# Save mapping table
+write.csv(scores,
+          file.path(tab_dir_16, "PB245_16um_cluster_compartment_scores.csv"),
+          row.names = FALSE)
+write.csv(data.frame(cluster=names(cluster_to_compartment),
+                     compartment=unname(cluster_to_compartment)),
+          file.path(tab_dir_16, "PB245_16um_cluster_to_compartment.csv"),
+          row.names = FALSE)
+
+
+✅ Optional manual override (do this if you disagree with a cluster):
+
+cluster_to_compartment["12"] <- "Macrophage_TAM"   # example
+seu_16um$compartment <- cluster_to_compartment[as.character(seu_16um$seurat_clusters)]
+
+3) FIGURES (UMAP + tissue map + bar plot) and save
+3A) UMAP labelled by compartment
+p_umap_comp <- DimPlot(
+  seu_16um,
+  reduction = "umap",
+  group.by = "compartment",
+  label = TRUE,
+  repel = TRUE
+) + theme_classic() + ggtitle("PB245 16µm – UMAP (compartments)")
+
+ggsave(file.path(fig_dir_16, "PB245_16um_UMAP_compartments.png"),
+       p_umap_comp, width=7, height=5, dpi=300)
+
+3B) Tissue map labelled by compartment
+p_spatial_comp <- SpatialDimPlot(
+  seu_16um,
+  group.by = "compartment",
+  label = FALSE,
+  image.alpha = 0.6
+) + ggtitle("PB245 16µm – Spatial compartments")
+
+ggsave(file.path(fig_dir_16, "PB245_16um_Spatial_compartments.png"),
+       p_spatial_comp, width=7, height=7, dpi=300)
+
+3C) Bar plot composition (counts + %)
+df_comp <- as.data.frame(table(seu_16um$compartment))
+colnames(df_comp) <- c("compartment","n_bins")
+df_comp$percent <- 100 * df_comp$n_bins / sum(df_comp$n_bins)
+
+p_bar <- ggplot(df_comp, aes(x=reorder(compartment, -percent), y=percent)) +
+  geom_col() +
+  geom_text(aes(label=sprintf("%.1f%%", percent)), vjust=-0.2, size=4) +
+  theme_classic() +
+  labs(x=NULL, y="Percent of 16µm bins", title="PB245 16µm – Compartment composition") +
+  coord_cartesian(ylim=c(0, max(df_comp$percent)*1.15))
+
+ggsave(file.path(fig_dir_16, "PB245_16um_Composition_barplot.png"),
+       p_bar, width=7, height=5, dpi=300)
+
+write.csv(df_comp,
+          file.path(tab_dir_16, "PB245_16um_compartment_composition.csv"),
+          row.names = FALSE)
+
+4) SAVE the final 16µm object (so you can continue anytime)
+saveRDS(seu_16um, file.path(obj_dir_16, "PB245_seu_16um_compartmentLabelled.rds"))
+save.image(file.path(obj_dir_16, "PB245_16um_session_after_compartments.RData"))
+
+One quick quality check (highly recommended)
+
+This tells you if the compartments make biological sense:
+
+DotPlot(
+  seu_16um,
+  features = unique(unlist(marker_sets[c("Tumour","Stroma","Immune","Macrophage_TAM","Endothelial")])),
+  group.by = "seurat_clusters"
+) + RotatedAxis()
+
+ggsave(file.path(fig_dir_16, "PB245_16um_DotPlot_markerSets_byCluster.png"),
+       width=12, height=5, dpi=300)
