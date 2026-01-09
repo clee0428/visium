@@ -1,3 +1,4 @@
+
 A) Terminal: activate conda + start R
 # go to your 16um project folder
 cd /home/lchristine/PB245_visium/16uM_analysis/
@@ -284,3 +285,415 @@ DotPlot(
 
 ggsave(file.path(fig_dir_16, "PB245_16um_DotPlot_markerSets_byCluster.png"),
        width=12, height=5, dpi=300)
+
+Why do some clusters have no markers?
+
+These warnings matter:
+
+“No features pass logfc.threshold … returning empty data.frame”
+
+This happens when a cluster:
+
+is small,
+
+is not very distinct,
+
+has mostly shared genes with other clusters,
+
+OR your logfc.threshold is too strict for VisiumHD (often smaller effect sizes at 16 µm).
+
+✅ Fix: re-run markers with lower thresholds and/or include negative markers.
+
+Try:
+
+
+markers_16um <- FindAllMarkers(
+  seu_16um,
+  only.pos = TRUE,
+  min.pct = 0.1,
+  logfc.threshold = 0.1
+)
+
+3) The “slot deprecated → use layer” warning
+
+Safe to ignore, but if you want to be clean:
+
+Use GetAssayData(..., layer="data") instead of slot="data".
+
+No action needed unless you’re tidying code.
+
+4) Now do the next step: label ALL clusters (0–25) correctly
+Step A — print top 10 markers per cluster (more informative)
+
+
+Step A — print top 10 markers per cluster (more informative)
+top10 <- markers_16um %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 10, with_ties = FALSE) %>%
+  arrange(as.numeric(as.character(cluster)))
+
+top10
+
+Step B — make a “marker cheat dotplot” to annotate quickly
+
+Idents(seu_16um) <- seu_16um$seurat_clusters
+
+genes_check <- c(
+  # tumour/epithelial
+  "EPCAM","KRT19","KRT8","KRT18","MSLN","MUC1","CLDN4","CEACAM6","MMP7",
+  # fibro/stroma
+  "COL1A1","COL1A2","COL3A1","DCN","LUM","SPARC","TAGLN","ACTA2",
+  # immune general + lymphoid
+  "PTPRC","CD3D","CD3E","TRAC","MS4A1","CD79A","IGKC","IGHG1",
+  # macrophage/TAM
+  "LYZ","APOE","C1QA","C1QB","C1QC","MARCO","SPP1","MSR1",
+  # endothelial
+  "PECAM1","VWF","KDR","CLDN5","EMCN"
+)
+
+p_dot <- DotPlot(seu_16um, features = genes_check) + RotatedAxis()
+p_dot
+
+5) Apply your mapping (your code is nearly right — here’s the safe version)
+
+You already have seurat_clusters in meta.data (good). Use that, not Idents() until you set them.
+
+# Ensure mapping has ALL clusters
+all_cl <- sort(unique(as.character(seu_16um$seurat_clusters)))
+cluster_to_compartment <- setNames(rep("Unknown", length(all_cl)), all_cl)
+
+# Fill what you already know from markers
+cluster_to_compartment["1"] <- "Stroma"            # COL1A1/COL3A1
+cluster_to_compartment["3"] <- "Immune"            # IGKC
+cluster_to_compartment["4"] <- "Macrophage_TAM"    # APOE
+cluster_to_compartment["5"] <- "Macrophage_TAM"    # LYZ/APOE
+
+# Apply to object
+seu_16um$compartment <- unname(cluster_to_compartment[as.character(seu_16um$seurat_clusters)])
+
+table(seu_16um$compartment, useNA="ifany")
+
+Then set identities:
+
+Idents(seu_16um) <- seu_16um$compartment
+
+6) Re-make and save the key figures (UMAP + tissue)
+p_umap_comp <- DimPlot(seu_16um, reduction="umap", group.by="compartment",
+                       label=TRUE, repel=TRUE) +
+  theme_classic() + ggtitle("PB245 16µm – compartments")
+
+p_spatial_comp <- SpatialDimPlot(seu_16um, group.by="compartment",
+                                 label=FALSE, image.alpha=0.6) +
+  ggtitle("PB245 16µm – spatial compartments")
+
+ggsave(file.path(fig_dir_16, "PB245_16um_UMAP_compartments.png"),
+       p_umap_comp, width=7, height=5, dpi=300)
+
+ggsave(file.path(fig_dir_16, "PB245_16um_Spatial_compartments.png"),
+       p_spatial_comp, width=7, height=7, dpi=300)
+
+
+
+
+From Visium HD at 16 µm, you should expect macro-compartments, not fine subtypes.
+
+How to classify each cluster
+
+Use this mental rule:
+
+🟥 Tumour / epithelial
+
+Markers:
+
+EPCAM, KRT8, KRT18, KRT19
+
+PIGR, FXYD3, FABP1
+
+MMP7, CEACAM6, CLDN4
+
+🟩 Stroma / fibroblast
+
+Markers:
+
+COL1A1, COL1A2, COL3A1
+
+DCN, LUM, SPARC
+
+TAGLN, ACTA2
+
+🟦 Immune (lymphoid)
+
+Markers:
+
+PTPRC
+
+IGKC, IGHG1, MS4A1
+
+CD3D/E, TRAC
+
+🟧 Macrophage / TAM
+
+Markers:
+
+LYZ, APOE
+
+C1QA/B/C
+
+SPP1, MARCO, MSR1
+
+🟪 Endothelial
+
+Markers:
+
+PECAM1, VWF
+
+KDR, CLDN5, EMCN
+
+⚪ Unknown / mixed
+
+Housekeeping genes only
+
+Low logFC
+
+Mixed signatures
+
+
+Apply the compartment labels (robust & correct)
+Step A — build mapping (start with what we know)
+# all clusters present
+clusters <- levels(seu_16um$seurat_clusters)
+
+cluster_to_compartment <- setNames(
+  rep("Unknown", length(clusters)),
+  clusters
+)
+
+# Based on your markers (and similar clusters you showed earlier)
+cluster_to_compartment["0"] <- "Tumour"          # PIGR / KRT8 / MMP7
+cluster_to_compartment["1"] <- "Stroma"          # COL1A1 / COL3A1 / DCN
+cluster_to_compartment["3"] <- "Immune"          # IGKC
+cluster_to_compartment["4"] <- "Macrophage_TAM"  # APOE
+cluster_to_compartment["5"] <- "Macrophage_TAM"  # LYZ / APOE
+cluster_to_compartment["6"] <- "Endothelial"     # if PECAM1/VWF present
+
+
+(You’ll fill in the rest cluster-by-cluster using top10 — this is normal.)
+
+Step B — attach to Seurat object (THIS is the correct way)
+seu_16um$compartment <- unname(
+  cluster_to_compartment[as.character(seu_16um$seurat_clusters)]
+)
+
+table(seu_16um$compartment, useNA = "ifany")
+
+
+Then set identities:
+
+Idents(seu_16um) <- seu_16um$compartment
+
+4️⃣ Regenerate the key supervisor figures
+UMAP (clean, interpretable)
+p_umap_comp <- DimPlot(
+  seu_16um,
+  reduction = "umap",
+  group.by = "compartment",
+  label = TRUE,
+  repel = TRUE
+) +
+  theme_classic() +
+  ggtitle("PB245 16 µm – macro compartments")
+
+p_umap_comp
+
+Spatial tissue map
+p_spatial_comp <- SpatialDimPlot(
+  seu_16um,
+  group.by = "compartment",
+  image.alpha = 0.6,
+  label = FALSE
+) +
+  ggtitle("PB245 16 µm – spatial compartments")
+
+p_spatial_comp
+
+5️⃣ What this gives you (for your supervisor)
+
+You can now clearly say:
+
+“At 16 µm resolution, unsupervised clustering resolves macro tissue compartments (tumour epithelium, stroma, immune, macrophage/TAM, endothelial). These compartments are spatially coherent on tissue and provide a global overview before higher-resolution 8 µm or scRNA-based refinement.”
+
+This is exactly what your supervisor was hinting at.
+
+Next (only when you’re ready)
+
+Finalise cluster labels (0–25 → compartments)
+
+Save object:
+
+saveRDS(seu_16um, file.path(obj_dir_16, "PB245_seu_16um_annotated.rds"))
+
+
+
+Next step: 
+
+Save cluster-labelled tissue (numbers + compartments)
+
+✔️ Create one summary panel for supervisor
+
+✔️ Do 8 µm vs 16 µm comparison plots
+
+
+library(Seurat)
+library(ggplot2)
+
+fig_dir_16 <- "/home/lchristine/PB245_visium/16uM_analysis/PB245_visiumHD_spatial_only_no_scRNA/02_figures"
+dir.create(fig_dir_16, recursive = TRUE, showWarnings = FALSE)
+
+# robust saver: always works (PNG + PDF)
+save_plot <- function(p, file_base, w=7, h=5, dpi=300) {
+  png(file_base %+% ".png", width = w*dpi, height = h*dpi, res = dpi)
+  print(p)
+  dev.off()
+
+  pdf(file_base %+% ".pdf", width = w, height = h, useDingbats = FALSE)
+  print(p)
+  dev.off()
+}
+`%+%` <- function(a,b) paste0(a,b)
+
+
+p16_umap_clusters <- DimPlot(
+  seu_16um,
+  reduction = "umap",
+  group.by = "seurat_clusters",
+  label = TRUE,
+  repel = TRUE
+) + theme_classic() + ggtitle("PB245 16µm – UMAP (Seurat clusters)")
+
+save_plot(p16_umap_clusters, file.path(fig_dir_16, "PB245_16um_UMAP_seurat_clusters"), w=7, h=5)
+
+p16_spatial_clusters <- SpatialDimPlot(
+  seu_16um,
+  group.by = "seurat_clusters",
+  label = TRUE,
+  label.size = 3,
+  image.alpha = 0.6
+) + ggtitle("PB245 16µm – Tissue (Seurat clusters)")
+
+save_plot(p16_spatial_clusters, file.path(fig_dir_16, "PB245_16um_Spatial_seurat_clusters"), w=7, h=7)
+
+Tissue map with cluster numbers
+p16_spatial_clusters <- SpatialDimPlot(
+  seu_16um,
+  group.by = "seurat_clusters",
+  label = TRUE,
+  label.size = 3,
+  image.alpha = 0.6
+) + ggtitle("PB245 16µm – Tissue (Seurat clusters)")
+
+save_plot(p16_spatial_clusters, file.path(fig_dir_16, "PB245_16um_Spatial_seurat_clusters"), w=7, h=7)
+
+
+Tissue map with compartment labels (Tumour/Stroma/Immune/etc)
+p16_spatial_comp <- SpatialDimPlot(
+  seu_16um,
+  group.by = "compartment",
+  label = TRUE,
+  label.size = 4,
+  image.alpha = 0.6
+) + ggtitle("PB245 16µm – Tissue (Compartment labels)")
+
+save_plot(p16_spatial_comp, file.path(fig_dir_16, "PB245_16um_Spatial_compartments"), w=7, h=7)
+
+(2) Bar plots (composition) + a “summary figure” set for supervisor (16 µm)
+A) Barplot: counts
+df16_counts <- as.data.frame(table(seu_16um$compartment), stringsAsFactors = FALSE)
+colnames(df16_counts) <- c("compartment","n_bins")
+
+p16_bar_counts <- ggplot(df16_counts, aes(x=compartment, y=n_bins)) +
+  geom_col() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1)) +
+  ggtitle("PB245 16µm – # bins per compartment")
+
+save_plot(p16_bar_counts, file.path(fig_dir_16, "PB245_16um_Bar_counts_compartment"), w=7, h=5)
+
+Barplot: percent
+df16_counts$percent <- 100 * df16_counts$n_bins / sum(df16_counts$n_bins)
+
+p16_bar_percent <- ggplot(df16_counts, aes(x=compartment, y=percent)) +
+  geom_col() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1)) +
+  ylab("% bins") +
+  ggtitle("PB245 16µm – % composition")
+
+save_plot(p16_bar_percent, file.path(fig_dir_16, "PB245_16um_Bar_percent_compartment"), w=7, h=5)
+
+pdf(file.path(fig_dir_16, "PB245_16um_SUPERVISOR_summary_pack.pdf"),
+    width=8, height=7, useDingbats = FALSE)
+
+print(p16_spatial_comp)
+print(p16_spatial_clusters)
+print(p16_umap_clusters)
+print(p16_bar_percent)
+print(p16_bar_counts)
+
+dev.off()
+
+DEG
+
+tab_dir_16 <- "/home/lchristine/PB245_visium/16uM_analysis/PB245_visiumHD_spatial_only_no_scRNA/03_tables"
+dir.create(tab_dir_16, recursive = TRUE, showWarnings = FALSE)
+
+
+library(dplyr)
+library(tibble)
+
+deg_T_vs_S_df <- deg_T_vs_S %>%
+  rownames_to_column("gene")
+
+deg_I_vs_S_df <- deg_I_vs_S %>%
+  rownames_to_column("gene")
+
+deg_T_vs_I_df <- deg_T_vs_I %>%
+  rownames_to_column("gene")
+
+write.csv(
+  deg_T_vs_S_df,
+  file = file.path(tab_dir_16, "PB245_16um_DEG_Tumour_vs_Stroma_FULL.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  deg_I_vs_S_df,
+  file = file.path(tab_dir_16, "PB245_16um_DEG_Immune_vs_Stroma_FULL.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  deg_T_vs_I_df,
+  file = file.path(tab_dir_16, "PB245_16um_DEG_Tumour_vs_Immune_FULL.csv"),
+  row.names = FALSE
+)
+
+
+
+write.csv(
+  deg_T_vs_S_df,
+  file = file.path(tab_dir_16, "PB245_16um_DEG_Tumour_vs_Stroma_FULL.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  deg_I_vs_S_df,
+  file = file.path(tab_dir_16, "PB245_16um_DEG_Immune_vs_Stroma_FULL.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  deg_T_vs_I_df,
+  file = file.path(tab_dir_16, "PB245_16um_DEG_Tumour_vs_Immune_FULL.csv"),
+  row.names = FALSE
+)
+
