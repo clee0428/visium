@@ -1,0 +1,284 @@
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(viridis)
+library(png)
+library(grid)
+
+sid <- "PDAC17_T1"
+
+outdir <- "/home/lchristine/visium/PDAC17_T1_TRUE_HE_ASPECT"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+data_dir <- "/home/lchristine/visium/PDAC/analysis_results/GIMR_GGP_MARPAJ_20250625_Visium/PDAC17-T1/spaceranger_count_cytassist/PDAC17-T1/outs"
+
+signatures <- list(
+  Tumour = c(
+    "EPCAM","KRT8","KRT18","KRT19","KRT7",
+    "MUC2","MUC5AC","TFF3","SPINK4","WFDC2","FCGBP","REG4",
+    "TM4SF1","S100A11","S100P","S100A6","TIMP1","GDF15","LCN2",
+    "EGFR","CYTOR","PDPN"
+  ),
+  Tcell = c("CD3E", "CD8A", "CD4", "FOXP3"),
+  CAF = c("COL1A1", "COL1A2", "COL3A1", "FAP", "ACTA2", "PDPN", "PDGFRB", "FN1")
+)
+
+make_score_plot <- function(df_plot, score_col, title_text, legend_text, xlim_use, ylim_use) {
+  vals <- df_plot[[score_col]]
+  vals <- vals[is.finite(vals)]
+
+  max_use <- if (length(vals) > 0) quantile(vals, 0.95, na.rm = TRUE) else 1
+  if (!is.finite(max_use) || max_use <= 0) max_use <- 1
+
+  ggplot(df_plot, aes(x = plot_x, y = plot_y, colour = .data[[score_col]])) +
+    geom_point(size = 0.35, alpha = 0.95) +
+    scale_colour_viridis_c(
+      option = "plasma",
+      limits = c(0, max_use),
+      oob = scales::squish,
+      na.value = "white",
+      name = legend_text
+    ) +
+    coord_fixed(xlim = xlim_use, ylim = ylim_use, expand = FALSE) +
+    theme_void(base_size = 14) +
+    ggtitle(title_text) +
+    theme(
+      plot.title = element_text(size = 15, face = "bold", hjust = 0.5),
+      legend.position = "right",
+      plot.background = element_rect(fill = "white", colour = NA),
+      panel.background = element_rect(fill = "white", colour = NA)
+    )
+}
+
+message("Running ", sid)
+
+seu <- Load10X_Spatial(
+  data.dir = data_dir,
+  bin.size = 16
+)
+
+DefaultAssay(seu) <- "Spatial.016um"
+
+umi_col <- grep("^nCount", colnames(seu@meta.data), value = TRUE)[1]
+feature_col <- grep("^nFeature", colnames(seu@meta.data), value = TRUE)[1]
+
+umi_cut_10pct <- quantile(seu@meta.data[[umi_col]], 0.10, na.rm = TRUE)
+
+keep_bins <- seu@meta.data[[umi_col]] > max(10, umi_cut_10pct)
+
+if (!is.na(feature_col)) {
+  keep_bins <- keep_bins & seu@meta.data[[feature_col]] >= 5
+}
+
+seu <- seu[, keep_bins]
+seu <- NormalizeData(seu, verbose = FALSE)
+
+counts <- GetAssayData(seu, layer = "counts")
+data_mat <- GetAssayData(seu, layer = "data")
+
+summary_all <- list()
+gene_all <- list()
+
+for (sig in names(signatures)) {
+
+  genes <- signatures[[sig]]
+
+  det_rate <- sapply(genes, function(g) {
+    if (!g %in% rownames(counts)) return(0)
+    mean(counts[g, ] > 0) * 100
+  })
+
+  if (sig == "Tcell") {
+    genes_used <- intersect(genes, rownames(data_mat))
+    threshold_used <- NA
+  } else {
+    genes_used <- names(det_rate)[det_rate >= 10]
+    threshold_used <- 10
+
+    if (length(genes_used) < 2) {
+      genes_used <- names(det_rate)[det_rate >= 5]
+      threshold_used <- 5
+    }
+
+    genes_used <- intersect(genes_used, rownames(data_mat))
+  }
+
+  genes_excluded <- setdiff(genes, genes_used)
+
+  gene_all[[sig]] <- data.frame(
+    sample = sid,
+    signature = sig,
+    gene = genes,
+    detection_pct = det_rate[genes],
+    used = genes %in% genes_used,
+    threshold_used_pct = threshold_used
+  )
+
+  score_col <- paste0(sig, "_mean_expr")
+
+  if (length(genes_used) >= 1) {
+    seu[[score_col]] <- Matrix::colMeans(data_mat[genes_used, , drop = FALSE])
+  } else {
+    seu[[score_col]] <- NA_real_
+  }
+
+  summary_all[[sig]] <- data.frame(
+    sample = sid,
+    signature = sig,
+    genes_used = paste(genes_used, collapse = ";"),
+    genes_excluded = paste(genes_excluded, collapse = ";"),
+    threshold_used_pct = threshold_used,
+    mean_score_all_bins_before_mask = mean(seu@meta.data[[score_col]], na.rm = TRUE),
+    n_bins_before_mask = ncol(seu)
+  )
+}
+
+## Load original H&E image directly
+img_path <- file.path(data_dir, "spatial", "tissue_hires_image.png")
+img <- png::readPNG(img_path)
+
+img_h <- dim(img)[1]
+img_w <- dim(img)[2]
+
+coords <- as.data.frame(GetTissueCoordinates(seu))
+if (!"cell" %in% colnames(coords)) coords$cell <- rownames(coords)
+
+df <- cbind(
+  coords,
+  seu@meta.data[coords$cell, , drop = FALSE]
+)
+
+## True H&E pixel coordinates
+if (all(c("imagecol", "imagerow") %in% colnames(df))) {
+  df$plot_x <- df$imagecol
+  df$plot_y <- img_h - df$imagerow
+} else if (all(c("x", "y") %in% colnames(df))) {
+  df$plot_x <- df$x
+  df$plot_y <- img_h - df$y
+} else {
+  stop("Could not find imagecol/imagerow or x/y coordinate columns")
+}
+
+## Strict morphology-style mask
+df$any_signature_signal <- rowSums(
+  cbind(
+    df$Tumour_mean_expr,
+    df$Tcell_mean_expr,
+    df$CAF_mean_expr
+  ),
+  na.rm = TRUE
+)
+
+df$umi_value <- df[[umi_col]]
+df$feature_value <- df[[feature_col]]
+
+signal_cut <- quantile(df$any_signature_signal, 0.25, na.rm = TRUE)
+umi_cut_strict <- quantile(df$umi_value, 0.20, na.rm = TRUE)
+feature_cut_strict <- quantile(df$feature_value, 0.20, na.rm = TRUE)
+
+df_plot <- df %>%
+  filter(
+    any_signature_signal > signal_cut,
+    umi_value > umi_cut_strict,
+    feature_value > feature_cut_strict
+  )
+
+message("Bins before strict mask: ", nrow(df))
+message("Bins after strict mask: ", nrow(df_plot))
+message("Percent retained: ", round(nrow(df_plot) / nrow(df) * 100, 2), "%")
+
+## Crop around retained tissue bins, preserving true image aspect
+x_min <- min(df_plot$plot_x, na.rm = TRUE)
+x_max <- max(df_plot$plot_x, na.rm = TRUE)
+y_min <- min(df_plot$plot_y, na.rm = TRUE)
+y_max <- max(df_plot$plot_y, na.rm = TRUE)
+
+x_pad <- (x_max - x_min) * 0.10
+y_pad <- (y_max - y_min) * 0.10
+
+xlim_use <- c(x_min - x_pad, x_max + x_pad)
+ylim_use <- c(y_min - y_pad, y_max + y_pad)
+
+## H&E with original image aspect preserved
+p_he <- ggplot() +
+  annotation_raster(
+    img,
+    xmin = 0,
+    xmax = img_w,
+    ymin = 0,
+    ymax = img_h
+  ) +
+  coord_fixed(xlim = xlim_use, ylim = ylim_use, expand = FALSE) +
+  ggtitle("PDAC17_T1 H&E") +
+  theme_void(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "white", colour = NA),
+    panel.background = element_rect(fill = "white", colour = NA)
+  )
+
+p_tumour <- make_score_plot(
+  df_plot, "Tumour_mean_expr", "PDAC17_T1 tumour", "Tumour\nscore", xlim_use, ylim_use
+)
+
+p_tcell <- make_score_plot(
+  df_plot, "Tcell_mean_expr", "PDAC17_T1 T-cell", "T-cell\nscore", xlim_use, ylim_use
+)
+
+p_caf <- make_score_plot(
+  df_plot, "CAF_mean_expr", "PDAC17_T1 CAF", "CAF\nscore", xlim_use, ylim_use
+)
+
+p_combined <- p_he + p_tumour + p_tcell + p_caf +
+  plot_layout(widths = c(1.15, 1, 1, 1))
+
+ggsave(
+  file.path(outdir, "PDAC17_T1_HE_tumour_Tcell_CAF_TRUE_HE_ASPECT.png"),
+  p_combined,
+  width = 16,
+  height = 5.2,
+  dpi = 600,
+  bg = "white"
+)
+
+ggsave(
+  file.path(outdir, "PDAC17_T1_HE_tumour_Tcell_CAF_TRUE_HE_ASPECT.pdf"),
+  p_combined,
+  width = 16,
+  height = 5.2,
+  bg = "white"
+)
+
+summary_df <- bind_rows(summary_all)
+
+summary_df$n_bins_after_strict_mask <- nrow(df_plot)
+summary_df$pct_bins_retained_after_strict_mask <- round(nrow(df_plot) / nrow(df) * 100, 2)
+summary_df$strict_signal_cut_q25 <- signal_cut
+summary_df$strict_umi_cut_q20 <- umi_cut_strict
+summary_df$strict_feature_cut_q20 <- feature_cut_strict
+
+summary_df$tumour_score_mean_after_mask <- mean(df_plot$Tumour_mean_expr, na.rm = TRUE)
+summary_df$tcell_score_mean_after_mask <- mean(df_plot$Tcell_mean_expr, na.rm = TRUE)
+summary_df$caf_score_mean_after_mask <- mean(df_plot$CAF_mean_expr, na.rm = TRUE)
+
+write.csv(
+  summary_df,
+  file.path(outdir, "PDAC17_T1_summary_TRUE_HE_ASPECT.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  bind_rows(gene_all),
+  file.path(outdir, "PDAC17_T1_gene_detection_TRUE_HE_ASPECT.csv"),
+  row.names = FALSE
+)
+
+saveRDS(seu, file.path(outdir, "PDAC17_T1_scored_before_strict_mask_TRUE_HE_ASPECT.rds"))
+saveRDS(df_plot, file.path(outdir, "PDAC17_T1_df_plot_AFTER_STRICT_MASK_TRUE_HE_ASPECT.rds"))
+
+save.image(file.path(outdir, "PDAC17_T1_workspace_TRUE_HE_ASPECT.RData"))
+
+message("DONE. Outputs saved to: ", outdir)
